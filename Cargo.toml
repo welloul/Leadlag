@@ -1,0 +1,90 @@
+[package]
+name = "tokioparasite"
+version = "0.1.0"
+edition = "2021"
+description = "Lead-Lag arbitrage bot with cross-correlation signal processing"
+license = "MIT"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+
+# Channels
+crossbeam-channel = "0.5"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+config = "0.14"
+toml = "0.8"
+
+# Validation
+validator = { version = "0.18", features = ["derive"] }
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+
+# Proto3 serialization
+prost = "0.13"
+
+# Embedded KV store
+sled = "0.34"
+
+# SIMD JSON parsing
+simd-json = "0.14"
+
+# CPU pinning
+core_affinity = "0.8"
+
+# Error handling
+thiserror = "1"
+anyhow = "1"
+
+# HTTP client (for REST APIs)
+reqwest = { version = "0.12", features = ["json", "rustls-tls"] }
+
+# WebSocket
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-native-roots"] }
+
+# UUID for correlation IDs
+uuid = { version = "1", features = ["v4"] }
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Fixed-point arithmetic
+rust_decimal = "1"
+
+[dev-dependencies]
+# Property-based testing
+proptest = "1"
+
+# Parameterized testing
+rstest = "0.22"
+
+# Mocking
+mockall = "0.13"
+
+# Benchmarks
+criterion = { version = "0.5", features = ["html_reports"] }
+
+# Test utilities
+tokio-test = "0.4"
+tempfile = "3"
+
+[[bench]]
+name = "hot_path"
+harness = false
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.bench]
+opt-level = 3
+lto = true

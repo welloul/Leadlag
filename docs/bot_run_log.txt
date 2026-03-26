@@ -1,0 +1,55 @@
+=== TokioParasite Bot Run Log ===
+Date: Wed Mar 26 20:34:23 +02 2026
+
+=== Bot Startup Log ===
+2026-03-26T18:34:23.016056Z  INFO ThreadId(01) tokioparasite: Starting TokioParasite Lead-Lag Bot
+2026-03-26T18:34:23.016100Z  INFO ThreadId(01) tokioparasite: Log level: info
+2026-03-26T18:34:23.016112Z  INFO ThreadId(01) tokioparasite: Paper trading: true
+2026-03-26T18:34:23.016114Z  INFO ThreadId(01) tokioparasite: CPU pinning: true
+2026-03-26T18:34:23.021215Z  INFO ThreadId(01) tokioparasite: State store opened at ./data/state_db
+2026-03-26T18:34:23.022088Z  INFO ThreadId(01) tokioparasite: Telemetry writer initialized at ./data/telemetry/
+2026-03-26T18:34:23.022103Z  INFO ThreadId(01) tokioparasite: OMS initialized with risk limits
+2026-03-26T18:34:23.022116Z  INFO ThreadId(01) tokioparasite: Signal pipeline initialized with 3 symbols
+2026-03-26T18:34:23.022121Z  INFO ThreadId(01) tokioparasite: Mock exchanges initialized
+2026-03-26T18:34:23.022136Z  INFO ThreadId(01) tokioparasite: Subscribed to market data for 3 symbols
+2026-03-26T18:34:23.022139Z  INFO ThreadId(01) tokioparasite: Entering main event loop...
+
+=== Build Warnings Summary ===
+- 61 warnings total (mostly unused imports and dead code)
+- Key warnings:
+  * Unused imports in multiple modules
+  * Unused variables (pipeline, signal, current_price, e)
+  * Dead code warnings for fields and methods not yet used
+  * These are expected for a v0.1.0 release with planned features
+
+=== Bot Status ===
+✓ Bot starts successfully
+✓ All modules initialize correctly
+✓ State store opens without errors
+✓ Telemetry writer initializes
+✓ OMS initializes with risk limits
+✓ Signal pipeline initializes with 3 symbols (BTC, ETH, SOL)
+✓ Mock exchanges initialize
+✓ Subscribes to market data for all symbols
+✓ Enters main event loop
+
+Note: Bot runs in paper trading mode with mock exchanges. No actual ticks are processed because no data is injected into the mock exchanges. This is expected behavior for the initial startup.
+
+=== Configuration ===
+- Paper trading: enabled
+- CPU pinning: enabled
+- Log level: info
+- Symbols: BTC, ETH, SOL
+- Window size: 256 ticks
+- Min correlation: 0.85
+- Hysteresis buffer: 0.10
+- Max notional: $5,000
+- Max daily drawdown: $200
+- Signal TTL: 150ms
+
+=== Next Steps for Live Testing ===
+1. Inject test ticks into mock exchanges to verify signal processing
+2. Test order submission through paper simulator
+3. Verify risk checks work correctly
+4. Test telemetry logging
+5. Validate state persistence across restarts
