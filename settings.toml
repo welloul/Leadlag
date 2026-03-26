@@ -54,6 +54,7 @@ self_trade_prevention = true
 
 [simulation]
 enabled = true
+use_real_data = true        # Fetch real market data from Binance/Hyperliquid (no API keys needed)
 latency_simulation_ms = 5   # Artificial RTT for paper trading
 fee_tier_bps = 2.5          # Default taker fee for Hyperliquid
 match_l2_depth = 10         # Match against top 10 levels of book

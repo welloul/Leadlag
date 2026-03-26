@@ -16,7 +16,7 @@ mod persist;
 mod signal;
 
 use config::Settings;
-use eal::{MarketData, MockExchange, VenueId};
+use eal::{BinanceExchange, HyperliquidExchange, MarketData, MockExchange, VenueId};
 use logging::init_logging;
 use oms::OrderManagementSystem;
 use persist::{StateStore, TelemetryWriter};
@@ -61,10 +61,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut pipeline = SignalPipeline::<256>::new(settings.strategy.clone());
     info!("Signal pipeline initialized with {} symbols", settings.strategy.symbols.len());
 
-    // Initialize mock exchanges (for paper trading)
-    let exchange_a = MockExchange::new(VenueId::EXCHANGE_A);
-    let exchange_b = MockExchange::new(VenueId::EXCHANGE_B);
-    info!("Mock exchanges initialized");
+    // Initialize exchanges based on configuration
+    let (exchange_a, exchange_b): (Box<dyn MarketData>, Box<dyn MarketData>) =
+        if settings.simulation.use_real_data {
+            info!("Using real market data feeds (Binance, Hyperliquid)");
+            (
+                Box::new(BinanceExchange::new()),
+                Box::new(HyperliquidExchange::new()),
+            )
+        } else {
+            info!("Using mock exchanges for paper trading");
+            (
+                Box::new(MockExchange::new(VenueId::EXCHANGE_A)),
+                Box::new(MockExchange::new(VenueId::EXCHANGE_B)),
+            )
+        };
 
     // Subscribe to market data
     let symbols: Vec<eal::Symbol> = settings

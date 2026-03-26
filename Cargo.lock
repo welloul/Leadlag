@@ -2906,6 +2906,7 @@ dependencies = [
  "core_affinity",
  "criterion",
  "crossbeam-channel",
+ "futures-util",
  "mockall",
  "proptest",
  "prost",

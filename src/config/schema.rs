@@ -193,6 +193,10 @@ pub struct SimulationSettings {
     /// Enable paper trading mode
     pub enabled: bool,
 
+    /// Use real market data feeds (Binance, Hyperliquid)
+    /// No API keys required for market data
+    pub use_real_data: bool,
+
     /// Artificial round-trip time in milliseconds
     #[validate(range(min = 0, max = 1000))]
     pub latency_simulation_ms: u64,

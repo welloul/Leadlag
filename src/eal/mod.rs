@@ -3,9 +3,13 @@
 //! Provides trait-based abstractions for exchange connectivity.
 //! Both live exchanges and mock implementations satisfy these traits.
 
+mod binance;
+mod hyperliquid;
 mod mock;
 mod types;
 
+pub use binance::BinanceExchange;
+pub use hyperliquid::HyperliquidExchange;
 pub use mock::MockExchange;
 pub use types::*;
 
