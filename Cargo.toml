@@ -5,6 +5,10 @@ edition = "2021"
 description = "Lead-Lag arbitrage bot with cross-correlation signal processing"
 license = "MIT"
 
+[lib]
+name = "tokioparasite"
+path = "src/lib.rs"
+
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }

@@ -88,14 +88,12 @@ impl<const N: usize> CrossCorrelator<N> {
         let var_x = (n * sum_x2) - (sum_x * sum_x);
         let var_y = (n * sum_y2) - (sum_y * sum_y);
 
-        // Defensive: add epsilon to prevent division by zero
-        let denominator = (var_x * var_y + self.epsilon).sqrt();
-
-        if denominator < self.epsilon {
-            // Zero variance in one or both streams
+        // Check for zero variance in either stream
+        if var_x < self.epsilon || var_y < self.epsilon {
             return 0.0;
         }
 
+        let denominator = (var_x * var_y).sqrt();
         let r = numerator / denominator;
 
         // Clamp to valid range and guard against NaN/Inf

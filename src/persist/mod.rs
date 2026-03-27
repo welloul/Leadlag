@@ -11,7 +11,6 @@ pub use telemetry::TelemetryWriter;
 pub use state::StateStore;
 
 use crate::config::StorageSettings;
-use std::path::Path;
 
 /// Initialize storage directories.
 pub fn init_storage(settings: &StorageSettings) -> Result<(), std::io::Error> {

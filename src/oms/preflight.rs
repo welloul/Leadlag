@@ -4,7 +4,7 @@
 //! risk violations. These checks are non-bypassable.
 
 use crate::config::{RiskSettings, StrategySettings};
-use crate::eal::{RiskError, Symbol, TradeSignal, VenueId};
+use crate::eal::{RiskError, TradeSignal, VenueId};
 use super::NetDelta;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -131,9 +131,37 @@ impl PreflightChecker {
     }
 
     /// Check estimated slippage against limit.
+    ///
+    /// Uses order size and typical market depth to estimate realistic slippage.
+    /// For liquid markets like BTC, slippage scales with order size relative to
+    /// available liquidity at each price level.
     fn check_max_slippage(&self, current_price: f64) -> Result<(), RiskError> {
-        // Estimate slippage as 1 tick (conservative)
-        let estimated_slippage_bps = 1.0; // 1 basis point
+        if current_price <= 0.0 {
+            return Err(RiskError::ExcessiveSlippage {
+                slippage_bps: f64::INFINITY,
+                max_bps: self.risk_settings.max_slippage_bps as f64,
+            });
+        }
+
+        // Calculate order size based on max notional
+        let order_size = self.risk_settings.max_notional_usd / current_price;
+        let notional = order_size * current_price;
+
+        // Estimate slippage based on order size and market depth
+        // For liquid markets like BTC/USDT:
+        // - Top of book: ~$100K-$500K liquidity within 1-2 bps
+        // - Mid depth: ~$1M-$5M liquidity within 5-10 bps
+        // - Deep depth: ~$10M+ liquidity within 10-20 bps
+        //
+        // Slippage model: slippage_bps = base_slippage + (size_impact * order_size_usd)
+        // where base_slippage = 1 bps (market impact)
+        // and size_impact = 0.001 bps per $1000 notional (for BTC)
+        let base_slippage_bps = 1.0;
+        let size_impact_bps_per_1000 = 0.001;
+        let estimated_slippage_bps = base_slippage_bps + (size_impact_bps_per_1000 * (notional / 1000.0));
+
+        // Cap at reasonable maximum (e.g., 50 bps for very large orders)
+        let estimated_slippage_bps = estimated_slippage_bps.min(50.0);
 
         if estimated_slippage_bps > self.risk_settings.max_slippage_bps as f64 {
             return Err(RiskError::ExcessiveSlippage {
@@ -152,7 +180,7 @@ impl PreflightChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eal::OrderSide;
+    use crate::eal::{OrderSide, Symbol};
 
     fn make_signal(venue: VenueId, r: f64, age_ms: u64) -> TradeSignal {
         let now = SystemTime::now()

@@ -14,7 +14,6 @@ pub use mock::MockExchange;
 pub use types::*;
 
 use async_trait::async_trait;
-use crossbeam_channel::Sender;
 use std::sync::Arc;
 
 // ============================================================================

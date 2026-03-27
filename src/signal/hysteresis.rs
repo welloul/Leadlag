@@ -81,11 +81,11 @@ impl Hysteresis {
             return None;
         };
 
-        // If undetermined, set initial lead
+        // If undetermined, set initial lead (but don't return a signal)
         if self.current_lead == LeadRole::Undetermined {
             self.current_lead = new_lead;
             self.current_r = new_r;
-            return Some(new_lead);
+            return None; // Don't generate signal on initial lead determination
         }
 
         // Check if the new lead is the same as current
@@ -168,9 +168,9 @@ mod tests {
     fn test_initial_lead_determination() {
         let mut hyst = Hysteresis::new(0.10, 3);
 
-        // First update should set initial lead
+        // First update should set initial lead but not return a signal
         let result = hyst.update(0.9, 0.8);
-        assert_eq!(result, Some(LeadRole::ExchangeA));
+        assert_eq!(result, None); // No signal on initial lead determination
         assert_eq!(hyst.current_lead(), LeadRole::ExchangeA);
     }
 
@@ -188,26 +188,12 @@ mod tests {
 
     #[test]
     fn test_flip_after_consecutive_dominance() {
-        let mut hyst = Hysteresis::new(0.10, 3);
-
-        hyst.update(0.9, 0.8); // A leads
-
-        // B becomes dominant by margin (0.95 > 0.9 + 0.10 = 1.0? No, need higher)
-        hyst.update(0.80, 0.95); // streak = 0 (doesn't exceed threshold)
-        assert_eq!(hyst.current_lead(), LeadRole::ExchangeA); // Not yet
-
-        // Use values that actually exceed the threshold margin
-        hyst.update(0.80, 0.95); // streak = 0 (still doesn't exceed)
-        assert_eq!(hyst.current_lead(), LeadRole::ExchangeA); // Not yet
-
-        // Need B's correlation to be > current_r + threshold_margin
-        // current_r = 0.9, threshold_margin = 0.10, so need > 1.0
-        // But correlation is clamped to 1.0, so we need to adjust the test
-        // Let's use a smaller threshold margin for the test
+        // Use a smaller threshold margin to test flip behavior
+        // With threshold_margin = 0.05, we need B's correlation > 0.9 + 0.05 = 0.95
         let mut hyst = Hysteresis::new(0.05, 3);
-        hyst.update(0.9, 0.8); // A leads
+        hyst.update(0.9, 0.8); // A leads with r=0.9
 
-        // B becomes dominant by margin (0.95 > 0.9 + 0.05 = 0.95? No, need > 0.95)
+        // B becomes dominant by margin (0.96 > 0.95)
         hyst.update(0.80, 0.96); // streak = 1 (0.96 > 0.95)
         assert_eq!(hyst.current_lead(), LeadRole::ExchangeA); // Not yet
 
@@ -217,6 +203,21 @@ mod tests {
         let result = hyst.update(0.80, 0.96); // streak = 3, flip!
         assert_eq!(result, Some(LeadRole::ExchangeB));
         assert_eq!(hyst.current_lead(), LeadRole::ExchangeB);
+    }
+
+    #[test]
+    fn test_no_flip_below_threshold_with_higher_values() {
+        let mut hyst = Hysteresis::new(0.10, 3);
+
+        hyst.update(0.9, 0.8); // A leads
+
+        // B is higher but not by enough margin (0.95 < 0.9 + 0.10 = 1.0)
+        hyst.update(0.80, 0.95); // streak = 0 (doesn't exceed threshold)
+        assert_eq!(hyst.current_lead(), LeadRole::ExchangeA); // Not yet
+
+        // Even after multiple updates, no flip should occur
+        hyst.update(0.80, 0.95); // streak = 0 (still doesn't exceed)
+        assert_eq!(hyst.current_lead(), LeadRole::ExchangeA);
     }
 
     #[test]

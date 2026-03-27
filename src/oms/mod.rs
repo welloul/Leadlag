@@ -9,48 +9,79 @@ pub use preflight::PreflightChecker;
 
 use crate::config::{RiskSettings, StrategySettings};
 use crate::eal::{
-    ExecutionError, FillEvent, OrderAck, OrderExecution, OrderRequest, OrderSide, Position,
+    FillEvent, OrderAck, OrderExecution, OrderRequest, OrderSide, Position,
     RiskError, Symbol, TradeSignal, VenueId,
 };
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Maximum number of symbols supported.
+const MAX_SYMBOLS: usize = 16;
+
+/// Maximum number of venues supported.
+const MAX_VENUES: usize = 2;
 
 /// Cross-venue net delta tracker.
 ///
 /// Tracks positions across both venues and calculates the global net delta.
+/// Uses fixed-size arrays for zero-cost indexing instead of HashMap.
 pub struct NetDelta {
-    /// Positions per venue per symbol.
-    positions: HashMap<(VenueId, Symbol), Position>,
+    /// Positions indexed by [venue][symbol_index].
+    /// Using Option<Position> to handle uninitialized slots.
+    positions: [[Option<Position>; MAX_SYMBOLS]; MAX_VENUES],
+    /// Symbol to index mapping (for fast lookup).
+    symbol_indices: Vec<(Symbol, usize)>,
     /// Daily realized PnL.
     daily_realized_pnl: f64,
     /// Daily loss limit.
     daily_loss_limit: f64,
-    /// Kill switch per venue.
-    kill_switches: HashMap<VenueId, Arc<AtomicBool>>,
+    /// Kill switch per venue (indexed by venue.0).
+    kill_switches: [Option<Arc<AtomicBool>>; MAX_VENUES],
 }
 
 impl NetDelta {
     /// Create a new net delta tracker.
     pub fn new(daily_loss_limit: f64) -> Self {
         Self {
-            positions: HashMap::new(),
+            positions: std::array::from_fn(|_| std::array::from_fn(|_| None)),
+            symbol_indices: Vec::new(),
             daily_realized_pnl: 0.0,
             daily_loss_limit,
-            kill_switches: HashMap::new(),
+            kill_switches: std::array::from_fn(|_| None),
         }
+    }
+
+    /// Get or create symbol index for fast lookup.
+    fn get_symbol_index(&mut self, symbol: &Symbol) -> usize {
+        // Check if symbol already exists
+        for (sym, idx) in &self.symbol_indices {
+            if sym == symbol {
+                return *idx;
+            }
+        }
+        
+        // Add new symbol
+        let idx = self.symbol_indices.len();
+        if idx >= MAX_SYMBOLS {
+            panic!("Exceeded maximum number of symbols ({})", MAX_SYMBOLS);
+        }
+        self.symbol_indices.push((symbol.clone(), idx));
+        idx
     }
 
     /// Register a kill switch for a venue.
     pub fn register_kill_switch(&mut self, venue: VenueId, kill_switch: Arc<AtomicBool>) {
-        self.kill_switches.insert(venue, kill_switch);
+        self.kill_switches[venue.0 as usize] = Some(kill_switch);
     }
 
     /// Update position after a fill.
     pub fn update_position(&mut self, fill: &FillEvent) {
-        let key = (fill.venue, fill.symbol.clone());
-        let position = self.positions.entry(key).or_insert(Position {
+        let venue_idx = fill.venue.0 as usize;
+        let symbol_idx = self.get_symbol_index(&fill.symbol);
+        
+        // Get or create position
+        let position = self.positions[venue_idx][symbol_idx].get_or_insert_with(|| Position {
             venue: fill.venue,
             symbol: fill.symbol.clone(),
             size: 0.0,
@@ -94,16 +125,26 @@ impl NetDelta {
 
     /// Get net delta for a symbol across all venues.
     pub fn net_delta(&self, symbol: &Symbol) -> f64 {
-        self.positions
-            .iter()
-            .filter(|((_, s), _)| s == symbol)
-            .map(|(_, p)| p.size)
-            .sum()
+        let mut total = 0.0;
+        for venue_positions in &self.positions {
+            for pos in venue_positions.iter().flatten() {
+                if pos.symbol == *symbol {
+                    total += pos.size;
+                }
+            }
+        }
+        total
     }
 
     /// Get total net delta across all symbols.
     pub fn total_net_delta(&self) -> f64 {
-        self.positions.values().map(|p| p.size).sum()
+        let mut total = 0.0;
+        for venue_positions in &self.positions {
+            for pos in venue_positions.iter().flatten() {
+                total += pos.size;
+            }
+        }
+        total
     }
 
     /// Check if daily loss limit is breached.
@@ -118,15 +159,21 @@ impl NetDelta {
 
     /// Check if any venue kill switch is active.
     pub fn is_kill_switch_active(&self, venue: &VenueId) -> bool {
-        self.kill_switches
-            .get(venue)
+        self.kill_switches[venue.0 as usize]
+            .as_ref()
             .map(|ks| ks.load(Ordering::SeqCst))
             .unwrap_or(false)
     }
 
-    /// Get all positions.
-    pub fn positions(&self) -> &HashMap<(VenueId, Symbol), Position> {
-        &self.positions
+    /// Get all positions as a vector.
+    pub fn positions(&self) -> Vec<&Position> {
+        let mut result = Vec::new();
+        for venue_positions in &self.positions {
+            for pos in venue_positions.iter().flatten() {
+                result.push(pos);
+            }
+        }
+        result
     }
 
     /// Reset daily PnL (call at start of new trading day).

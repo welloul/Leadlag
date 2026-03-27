@@ -14,7 +14,7 @@ pub mod timegrid;
 pub use correlation::CrossCorrelator;
 pub use hysteresis::{Hysteresis, LeadRole};
 pub use ring_buffer::RingBuffer;
-pub use timegrid::{AlignedPair, TimeGrid};
+pub use timegrid::{AlignedPair, IngestResult, TimeGrid};
 
 use crate::config::StrategySettings;
 use crate::eal::{OrderSide, Symbol, TradeSignal, VenueId};
@@ -93,27 +93,27 @@ impl<const N: usize> SignalPipeline<N> {
             (r, r)
         };
 
-        // Update hysteresis
+        // Update hysteresis (always update to track current lead)
         if let Some(new_lead) = hyst.update(r_a, r_b) {
             // Role flip detected!
-            let laggard = new_lead.laggard();
-            let laggard_venue = match laggard {
-                LeadRole::ExchangeA => VenueId::EXCHANGE_A,
-                LeadRole::ExchangeB => VenueId::EXCHANGE_B,
-                LeadRole::Undetermined => return None,
-            };
-
-            // Determine trade direction based on price movement
-            let side = if pair.price_a > pair.price_b {
-                // A is leading up, buy on laggard
-                OrderSide::Buy
-            } else {
-                // A is leading down, sell on laggard
-                OrderSide::Sell
-            };
-
             // Only generate signal if correlation is above threshold
             if best_r >= self.min_r {
+                let laggard = new_lead.laggard();
+                let laggard_venue = match laggard {
+                    LeadRole::ExchangeA => VenueId::EXCHANGE_A,
+                    LeadRole::ExchangeB => VenueId::EXCHANGE_B,
+                    LeadRole::Undetermined => return None,
+                };
+
+                // Determine trade direction based on price movement
+                let side = if pair.price_a > pair.price_b {
+                    // A is leading up, buy on laggard
+                    OrderSide::Buy
+                } else {
+                    // A is leading down, sell on laggard
+                    OrderSide::Sell
+                };
+
                 return Some(TradeSignal {
                     side,
                     target_venue: laggard_venue,
@@ -130,12 +130,12 @@ impl<const N: usize> SignalPipeline<N> {
 
     /// Get the current lead role for a symbol.
     pub fn current_lead(&self, symbol: &Symbol) -> Option<LeadRole> {
-        self.hysteresis.get(symbol).map(|h| h.current_lead())
+        self.hysteresis.get(symbol).map(|h: &Hysteresis| h.current_lead())
     }
 
     /// Get the current correlation for a symbol.
     pub fn current_correlation(&self, symbol: &Symbol) -> Option<f64> {
-        self.correlators.get(symbol).map(|c| c.correlation())
+        self.correlators.get(symbol).map(|c: &CrossCorrelator<N>| c.correlation())
     }
 
     /// Reset the pipeline for a symbol.

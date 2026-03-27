@@ -20,7 +20,8 @@ use eal::{BinanceExchange, HyperliquidExchange, MarketData, MockExchange, VenueI
 use logging::init_logging;
 use oms::OrderManagementSystem;
 use persist::{StateStore, TelemetryWriter};
-use signal::SignalPipeline;
+use signal::{SignalPipeline, TimeGrid};
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{error, info, warn};
@@ -89,9 +90,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tick_rx_b = exchange_b.subscribe_ticks(&symbols).await?;
     info!("Subscribed to market data for {} symbols", symbols.len());
 
+    // Initialize time grid for tick alignment
+    let mut timegrid = TimeGrid::new(settings.app.tick_precision_ns);
+    info!("Time grid initialized with {}ns precision", settings.app.tick_precision_ns);
+
+    // Initialize paper simulator for order execution
+    let simulator = eal::MockExchange::new(VenueId::EXCHANGE_A);
+
     // Main event loop
     info!("Entering main event loop...");
     let mut tick_count = 0u64;
+    let mut signal_count = 0u64;
 
     loop {
         // Check kill switches
@@ -109,10 +118,42 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tick_count += 1;
             telemetry.log_tick(&tick);
 
-            // Process through time grid and signal pipeline
-            // (Simplified for now - full implementation would use TimeGrid)
+            // Process through time grid (zero-cost, no heap allocation)
+            let ingest_result = timegrid.ingest_tick(&tick);
+            for pair in ingest_result.iter() {
+                // Process each aligned pair through signal pipeline
+                if let Some(signal) = pipeline.process_pair(&tick.symbol, pair) {
+                    signal_count += 1;
+                    info!(
+                        "Signal generated: {} {} at R={:.3}",
+                        signal.side, signal.symbol, signal.correlation_r
+                    );
+
+                    // Log signal to telemetry
+                    telemetry.log_signal(
+                        &signal.symbol.to_string(),
+                        &signal.side.to_string(),
+                        signal.correlation_r,
+                        signal.lag_offset_ns,
+                    );
+
+                    // Process signal through OMS
+                    match oms.process_signal(&signal, pair.price_a, &simulator).await {
+                        Ok(ack) => {
+                            info!("Order submitted: {}", ack.order_id);
+                        }
+                        Err(e) => {
+                            warn!("Order rejected: {}", e);
+                        }
+                    }
+                }
+            }
+
             if tick_count % 100 == 0 {
-                info!("Processed {} ticks", tick_count);
+                info!(
+                    "Processed {} ticks, generated {} signals",
+                    tick_count, signal_count
+                );
             }
         }
 
@@ -120,6 +161,37 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Ok(tick) = tick_rx_b.try_recv() {
             tick_count += 1;
             telemetry.log_tick(&tick);
+
+            // Process through time grid (zero-cost, no heap allocation)
+            let ingest_result = timegrid.ingest_tick(&tick);
+            for pair in ingest_result.iter() {
+                // Process each aligned pair through signal pipeline
+                if let Some(signal) = pipeline.process_pair(&tick.symbol, pair) {
+                    signal_count += 1;
+                    info!(
+                        "Signal generated: {} {} at R={:.3}",
+                        signal.side, signal.symbol, signal.correlation_r
+                    );
+
+                    // Log signal to telemetry
+                    telemetry.log_signal(
+                        &signal.symbol.to_string(),
+                        &signal.side.to_string(),
+                        signal.correlation_r,
+                        signal.lag_offset_ns,
+                    );
+
+                    // Process signal through OMS
+                    match oms.process_signal(&signal, pair.price_b, &simulator).await {
+                        Ok(ack) => {
+                            info!("Order submitted: {}", ack.order_id);
+                        }
+                        Err(e) => {
+                            warn!("Order rejected: {}", e);
+                        }
+                    }
+                }
+            }
         }
 
         // Small sleep to prevent busy-waiting

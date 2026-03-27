@@ -4,7 +4,6 @@
 //! Uses optimistic writes to avoid blocking the OMS.
 
 use sled::Db;
-use std::path::Path;
 use std::sync::Arc;
 
 /// State store for persistent state.

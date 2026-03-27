@@ -5,6 +5,10 @@
 
 use crate::eal::Tick;
 
+/// Maximum number of aligned pairs that can be generated per tick.
+/// This is a compile-time constant to avoid heap allocation.
+const MAX_ALIGNED_PAIRS: usize = 64;
+
 /// Time-grid aligner for synchronizing two exchange feeds.
 ///
 /// Maps asynchronous ticks onto a common time grid using forward-fill.
@@ -37,6 +41,36 @@ pub struct AlignedPair {
     pub a_updated: bool,
     /// Whether exchange B had a new tick in this bin.
     pub b_updated: bool,
+}
+
+/// Result of ingesting a tick into the time grid.
+/// Contains a fixed-size array of aligned pairs and the count of valid pairs.
+pub struct IngestResult {
+    /// Fixed-size array of aligned pairs (zero-cost, no heap allocation).
+    pub pairs: [AlignedPair; MAX_ALIGNED_PAIRS],
+    /// Number of valid pairs in the array.
+    pub count: usize,
+}
+
+impl IngestResult {
+    /// Create a new empty ingest result.
+    fn new() -> Self {
+        Self {
+            pairs: [AlignedPair {
+                timestamp_ns: 0,
+                price_a: 0.0,
+                price_b: 0.0,
+                a_updated: false,
+                b_updated: false,
+            }; MAX_ALIGNED_PAIRS],
+            count: 0,
+        }
+    }
+
+    /// Get an iterator over the valid pairs.
+    pub fn iter(&self) -> impl Iterator<Item = &AlignedPair> {
+        self.pairs[..self.count].iter()
+    }
 }
 
 impl TimeGrid {
@@ -73,9 +107,12 @@ impl TimeGrid {
     ///
     /// Returns aligned pairs for all grid bins between the last tick and this one.
     /// Uses forward-fill for the exchange that didn't have a new tick.
-    pub fn ingest_tick(&mut self, tick: &Tick) -> Vec<AlignedPair> {
+    ///
+    /// # Zero-Cost Abstraction
+    /// Returns a fixed-size array to avoid heap allocation on the hot path.
+    pub fn ingest_tick(&mut self, tick: &Tick) -> IngestResult {
         let grid_ts = self.to_grid(tick.exchange_ts_ns);
-        let mut pairs = Vec::new();
+        let mut result = IngestResult::new();
 
         // Determine which exchange this tick is from
         let is_exchange_a = tick.venue == crate::eal::VenueId::EXCHANGE_A;
@@ -94,22 +131,28 @@ impl TimeGrid {
             let end_grid = grid_ts;
 
             for grid in start_grid..=end_grid {
+                if result.count >= MAX_ALIGNED_PAIRS {
+                    // Buffer full, stop generating pairs
+                    break;
+                }
+
                 let a_updated = self.last_grid_a.map_or(false, |g| g == grid);
                 let b_updated = self.last_grid_b.map_or(false, |g| g == grid);
 
-                pairs.push(AlignedPair {
+                result.pairs[result.count] = AlignedPair {
                     timestamp_ns: self.to_ns(grid),
                     price_a,
                     price_b,
                     a_updated,
                     b_updated,
-                });
+                };
+                result.count += 1;
             }
 
             self.current_grid = end_grid + 1;
         }
 
-        pairs
+        result
     }
 
     /// Get the current aligned pair (without ingesting a new tick).
@@ -161,15 +204,15 @@ mod tests {
         let mut grid = TimeGrid::new(5_000_000); // 5ms grid
 
         // First tick from exchange A
-        let pairs = grid.ingest_tick(&make_tick(VenueId::EXCHANGE_A, 60000.0, 0));
-        assert!(pairs.is_empty()); // No B price yet
+        let result = grid.ingest_tick(&make_tick(VenueId::EXCHANGE_A, 60000.0, 0));
+        assert_eq!(result.count, 0); // No B price yet
 
         // First tick from exchange B
-        let pairs = grid.ingest_tick(&make_tick(VenueId::EXCHANGE_B, 60001.0, 2_000_000));
-        assert!(!pairs.is_empty());
+        let result = grid.ingest_tick(&make_tick(VenueId::EXCHANGE_B, 60001.0, 2_000_000));
+        assert!(result.count > 0);
 
         // Should have aligned pair
-        let pair = &pairs[0];
+        let pair = &result.pairs[0];
         assert_eq!(pair.price_a, 60000.0);
         assert_eq!(pair.price_b, 60001.0);
     }
@@ -182,15 +225,15 @@ mod tests {
         grid.ingest_tick(&make_tick(VenueId::EXCHANGE_A, 60000.0, 0));
 
         // B ticks at 0ms
-        let pairs = grid.ingest_tick(&make_tick(VenueId::EXCHANGE_B, 60001.0, 0));
-        assert_eq!(pairs.len(), 1);
+        let result = grid.ingest_tick(&make_tick(VenueId::EXCHANGE_B, 60001.0, 0));
+        assert_eq!(result.count, 1);
 
         // A ticks at 10ms (B hasn't ticked since 0ms)
-        let pairs = grid.ingest_tick(&make_tick(VenueId::EXCHANGE_A, 60002.0, 10_000_000));
+        let result = grid.ingest_tick(&make_tick(VenueId::EXCHANGE_A, 60002.0, 10_000_000));
 
         // Should have pairs for grid bins 1 and 2 (5ms and 10ms)
         // Both should use B's last price (60001.0) via forward-fill
-        for pair in &pairs {
+        for pair in result.iter() {
             assert_eq!(pair.price_b, 60001.0);
         }
     }
@@ -203,7 +246,7 @@ mod tests {
         grid.ingest_tick(&make_tick(VenueId::EXCHANGE_B, 200.0, 0));
 
         // Tick at 15ms should be in grid bin 1 (10ms-20ms)
-        let pairs = grid.ingest_tick(&make_tick(VenueId::EXCHANGE_A, 101.0, 15_000_000));
-        assert!(!pairs.is_empty());
+        let result = grid.ingest_tick(&make_tick(VenueId::EXCHANGE_A, 101.0, 15_000_000));
+        assert!(result.count > 0);
     }
 }

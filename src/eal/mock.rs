@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
 use super::{
-    AccountState, BookLevel, BookUpdate, ExchangeError, ExecutionError, FillEvent, MarketData,
-    OrderAck, OrderExecution, OrderId, OrderRequest, OrderSide, Position, Symbol, Tick, VenueId,
+    AccountState, BookUpdate, ExchangeError, ExecutionError, MarketData,
+    OrderAck, OrderExecution, OrderId, OrderRequest, Position, Symbol, Tick, VenueId,
 };
 
 /// Mock exchange for testing.
