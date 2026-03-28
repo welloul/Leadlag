@@ -149,6 +149,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut tick_count = 0u64;
     let mut signal_count = 0u64;
 
+    // Track last seen price per venue for book synthesis
+    let mut last_price_a: Option<f64> = None;
+    let mut last_price_b: Option<f64> = None;
+
     loop {
         // Check kill switches
         if kill_switch_a.load(Ordering::SeqCst) {
@@ -164,6 +168,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Ok(tick) = tick_rx_a.try_recv() {
             tick_count += 1;
             telemetry.log_tick(&tick);
+            last_price_a = Some(tick.price);
+
+            // Update Exchange A's book at its actual price
+            simulator.update_book_from_tick(&tick.symbol, tick.price, tick.venue);
+
+            // Seed Exchange B's book from A's price if B hasn't sent any ticks yet.
+            // In real trading, B's book exists independently. Here we approximate it.
+            if last_price_b.is_none() {
+                simulator.update_book_from_tick(&tick.symbol, tick.price, VenueId::EXCHANGE_B);
+            }
 
             // Process through time grid (zero-cost, no heap allocation)
             let ingest_result = timegrid.ingest_tick(&tick);
@@ -184,7 +198,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         signal.lag_offset_ns,
                     );
 
-                    match oms.process_signal(&signal, pair.price_a, &simulator).await {
+                    // Use target venue's price, not source tick's price
+                    let exec_price = simulator.get_mid_price(&signal.symbol, signal.target_venue)
+                        .unwrap_or(tick.price);
+                    match oms.process_signal(&signal, exec_price, &simulator).await {
                         Ok(ack) => {
                             info!("Order submitted: {}", ack.order_id);
                         }
@@ -195,7 +212,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            // Impulse-OBI: process tick directly for impulse detection (Issue 1 fix)
+            // Impulse-OBI: process tick directly for impulse detection
             if let Some(signal) = pipeline.process_tick(&tick) {
                 signal_count += 1;
                 info!(
@@ -210,7 +227,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     signal.lag_offset_ns,
                 );
 
-                match oms.process_signal(&signal, tick.price, &simulator).await {
+                // Use target venue's price for risk checks and execution
+                let exec_price = simulator.get_mid_price(&signal.symbol, signal.target_venue)
+                    .unwrap_or(tick.price);
+                match oms.process_signal(&signal, exec_price, &simulator).await {
                     Ok(ack) => {
                         info!("Order submitted: {}", ack.order_id);
                     }
@@ -232,6 +252,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         if let Ok(tick) = tick_rx_b.try_recv() {
             tick_count += 1;
             telemetry.log_tick(&tick);
+            last_price_b = Some(tick.price);
+
+            // Update Exchange B's book at its actual price
+            simulator.update_book_from_tick(&tick.symbol, tick.price, tick.venue);
+
+            // Seed Exchange A's book from B's price if A hasn't sent any ticks yet
+            if last_price_a.is_none() {
+                simulator.update_book_from_tick(&tick.symbol, tick.price, VenueId::EXCHANGE_A);
+            }
 
             let ingest_result = timegrid.ingest_tick(&tick);
 
@@ -250,7 +279,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         signal.lag_offset_ns,
                     );
 
-                    match oms.process_signal(&signal, pair.price_b, &simulator).await {
+                    // Use target venue's price, not source tick's price
+                    let exec_price = simulator.get_mid_price(&signal.symbol, signal.target_venue)
+                        .unwrap_or(tick.price);
+                    match oms.process_signal(&signal, exec_price, &simulator).await {
                         Ok(ack) => {
                             info!("Order submitted: {}", ack.order_id);
                         }
@@ -261,7 +293,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 }
             }
 
-            // Impulse-OBI: process tick directly (Issue 1 fix)
+            // Impulse-OBI: process tick directly
             if let Some(signal) = pipeline.process_tick(&tick) {
                 signal_count += 1;
                 info!(
@@ -276,7 +308,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     signal.lag_offset_ns,
                 );
 
-                match oms.process_signal(&signal, tick.price, &simulator).await {
+                // Use target venue's price for risk checks and execution
+                let exec_price = simulator.get_mid_price(&signal.symbol, signal.target_venue)
+                    .unwrap_or(tick.price);
+                match oms.process_signal(&signal, exec_price, &simulator).await {
                     Ok(ack) => {
                         info!("Order submitted: {}", ack.order_id);
                     }

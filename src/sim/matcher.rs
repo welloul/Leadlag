@@ -10,9 +10,9 @@ use crate::eal::{BookLevel, OrderSide};
 /// Matches orders against L2 order book depth with realistic slippage.
 pub struct OrderBookMatcher {
     /// Bid levels (sorted descending by price).
-    bids: Vec<BookLevel>,
+    pub(crate) bids: Vec<BookLevel>,
     /// Ask levels (sorted ascending by price).
-    asks: Vec<BookLevel>,
+    pub(crate) asks: Vec<BookLevel>,
     /// Maximum depth to match against.
     max_depth: usize,
 }
@@ -136,13 +136,17 @@ mod tests {
     fn test_basic_buy_fill() {
         let mut matcher = OrderBookMatcher::new(10);
         matcher.update_book(
-            vec![BookLevel { price: 60000.0, size: 1.0 }],
-            vec![BookLevel { price: 60001.0, size: 1.0 }],
+            vec![BookLevel {
+                price: 60000.0,
+                size: 1.0,
+            }],
+            vec![BookLevel {
+                price: 60001.0,
+                size: 1.0,
+            }],
         );
 
-        let (filled, avg, slippage) = matcher
-            .match_order(OrderSide::Buy, 0.5, None)
-            .unwrap();
+        let (filled, avg, slippage) = matcher.match_order(OrderSide::Buy, 0.5, None).unwrap();
 
         assert_eq!(filled, 0.5);
         assert_eq!(avg, 60001.0);
@@ -153,17 +157,27 @@ mod tests {
     fn test_multi_level_fill() {
         let mut matcher = OrderBookMatcher::new(10);
         matcher.update_book(
-            vec![BookLevel { price: 60000.0, size: 1.0 }],
+            vec![BookLevel {
+                price: 60000.0,
+                size: 1.0,
+            }],
             vec![
-                BookLevel { price: 60001.0, size: 0.3 },
-                BookLevel { price: 60002.0, size: 0.3 },
-                BookLevel { price: 60003.0, size: 0.4 },
+                BookLevel {
+                    price: 60001.0,
+                    size: 0.3,
+                },
+                BookLevel {
+                    price: 60002.0,
+                    size: 0.3,
+                },
+                BookLevel {
+                    price: 60003.0,
+                    size: 0.4,
+                },
             ],
         );
 
-        let (filled, avg, slippage) = matcher
-            .match_order(OrderSide::Buy, 0.5, None)
-            .unwrap();
+        let (filled, avg, slippage) = matcher.match_order(OrderSide::Buy, 0.5, None).unwrap();
 
         assert_eq!(filled, 0.5);
         // VWAP = (0.3 * 60001 + 0.2 * 60002) / 0.5 = 60001.4
@@ -175,10 +189,19 @@ mod tests {
     fn test_limit_price_respected() {
         let mut matcher = OrderBookMatcher::new(10);
         matcher.update_book(
-            vec![BookLevel { price: 60000.0, size: 1.0 }],
+            vec![BookLevel {
+                price: 60000.0,
+                size: 1.0,
+            }],
             vec![
-                BookLevel { price: 60001.0, size: 0.3 },
-                BookLevel { price: 60005.0, size: 0.3 },
+                BookLevel {
+                    price: 60001.0,
+                    size: 0.3,
+                },
+                BookLevel {
+                    price: 60005.0,
+                    size: 0.3,
+                },
             ],
         );
 

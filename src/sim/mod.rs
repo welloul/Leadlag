@@ -1,7 +1,7 @@
 //! Paper Trading Simulator module.
 //!
 //! Implements high-fidelity paper trading with:
-//! - L2 order book matching
+//! - Per-venue L2 order book matching
 //! - Latency simulation
 //! - Fee/slippage calculation
 //! - Alpha decay statistics
@@ -20,14 +20,69 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
+/// Spread model per venue type.
+///
+/// Binance is the most liquid venue (tight spread).
+/// Hyperliquid has wider spreads due to lower liquidity.
+#[derive(Debug, Clone, Copy)]
+struct VenueSpreadModel {
+    /// Base spread in bps
+    base_spread_bps: f64,
+    /// Size impact factor (bps per $1000 notional)
+    size_impact_bps: f64,
+}
+
+impl VenueSpreadModel {
+    /// Spread model for Binance (tight, deep book).
+    fn binance() -> Self {
+        Self {
+            base_spread_bps: 1.0, // 0.01%
+            size_impact_bps: 0.0005,
+        }
+    }
+
+    /// Spread model for Hyperliquid (wider, thinner book).
+    fn hyperliquid() -> Self {
+        Self {
+            base_spread_bps: 5.0, // 0.05%
+            size_impact_bps: 0.002,
+        }
+    }
+
+    /// Default spread model for unknown venues.
+    fn default_venue() -> Self {
+        Self {
+            base_spread_bps: 2.5,
+            size_impact_bps: 0.001,
+        }
+    }
+
+    /// Get spread model for a venue.
+    fn for_venue(venue: VenueId) -> Self {
+        match venue {
+            VenueId::EXCHANGE_A => Self::binance(),   // Binance
+            VenueId::EXCHANGE_B => Self::hyperliquid(), // Hyperliquid
+            _ => Self::default_venue(),
+        }
+    }
+
+    /// Calculate half-spread for a given price.
+    fn half_spread(&self, price: f64, order_notional: f64) -> f64 {
+        let base = price * (self.base_spread_bps / 10000.0);
+        let impact = price * (self.size_impact_bps * (order_notional / 1000.0) / 10000.0);
+        base + impact
+    }
+}
+
 /// Paper trading simulator.
 ///
-/// Simulates exchange behavior with realistic fills, latency, and fees.
+/// Maintains separate order books per (Symbol, VenueId) pair.
+/// Each venue has its own price, spread, and liquidity depth.
 pub struct PaperSimulator {
     /// Simulation settings.
     settings: SimulationSettings,
-    /// Order book matcher per symbol.
-    matchers: Arc<Mutex<HashMap<Symbol, OrderBookMatcher>>>,
+    /// Order book matcher per (symbol, venue) pair.
+    matchers: Arc<Mutex<HashMap<(Symbol, VenueId), OrderBookMatcher>>>,
     /// Order counter.
     order_counter: Arc<Mutex<u64>>,
     /// Positions.
@@ -54,14 +109,96 @@ impl PaperSimulator {
         }
     }
 
-    /// Update the order book for a symbol.
+    /// Update the order book from a real L2 BookUpdate.
     pub fn update_book(&self, update: BookUpdate) {
+        let key = (update.symbol.clone(), update.venue);
         let mut matchers = self.matchers.lock().unwrap();
         let matcher = matchers
-            .entry(update.symbol.clone())
+            .entry(key)
             .or_insert_with(|| OrderBookMatcher::new(self.settings.match_l2_depth));
 
         matcher.update_book(update.bids, update.asks);
+    }
+
+    /// Synthesize an order book from a tick price.
+    ///
+    /// Creates a synthetic L2 book with per-venue spread and depth.
+    /// Each venue gets its own independent book keyed by (Symbol, VenueId).
+    pub fn update_book_from_tick(&self, symbol: &Symbol, price: f64, venue: VenueId) {
+        if price <= 0.0 || !price.is_finite() {
+            return;
+        }
+
+        let spread_model = VenueSpreadModel::for_venue(venue);
+
+        // Use max_notional as estimate for size impact
+        let estimated_notional = 5000.0;
+        let half_spread = spread_model.half_spread(price, estimated_notional);
+
+        let mut bids = Vec::with_capacity(self.settings.match_l2_depth);
+        let mut asks = Vec::with_capacity(self.settings.match_l2_depth);
+
+        for i in 0..self.settings.match_l2_depth {
+            let depth_bps = (i as f64) * 0.5; // 0.5 bps per level
+            let bid_price = price - half_spread - (price * depth_bps / 10000.0);
+            let ask_price = price + half_spread + (price * depth_bps / 10000.0);
+            // Large synthetic size — will fill any realistic order
+            let size = 10_000.0;
+            bids.push(BookLevel { price: bid_price, size });
+            asks.push(BookLevel { price: ask_price, size });
+        }
+
+        let key = (symbol.clone(), venue);
+        let mut matchers = self.matchers.lock().unwrap();
+        let matcher = matchers
+            .entry(key)
+            .or_insert_with(|| OrderBookMatcher::new(self.settings.match_l2_depth));
+
+        matcher.update_book(bids, asks);
+    }
+
+    /// Check if a venue has enough liquidity to trade.
+    ///
+    /// Returns true if the book for (symbol, venue) has at least one bid and one ask.
+    pub fn is_venue_liquid(&self, symbol: &Symbol, venue: VenueId) -> bool {
+        let matchers = self.matchers.lock().unwrap();
+        if let Some(matcher) = matchers.get(&(symbol.clone(), venue)) {
+            !matcher.bids.is_empty() && !matcher.asks.is_empty()
+        } else {
+            false
+        }
+    }
+
+    /// Get the mid price for a (symbol, venue) pair.
+    ///
+    /// Returns the midpoint of the best bid and ask for the target venue.
+    /// Falls back to the other venue if the target venue has no book yet.
+    pub fn get_mid_price(&self, symbol: &Symbol, venue: VenueId) -> Option<f64> {
+        let matchers = self.matchers.lock().unwrap();
+
+        // Try target venue first
+        if let Some(matcher) = matchers.get(&(symbol.clone(), venue)) {
+            if let Some(mid) = matcher.mid_price() {
+                if mid > 0.0 && mid.is_finite() {
+                    return Some(mid);
+                }
+            }
+        }
+
+        // Fall back to the other venue
+        let other_venue = match venue {
+            VenueId::EXCHANGE_A => VenueId::EXCHANGE_B,
+            _ => VenueId::EXCHANGE_A,
+        };
+        if let Some(matcher) = matchers.get(&(symbol.clone(), other_venue)) {
+            if let Some(mid) = matcher.mid_price() {
+                if mid > 0.0 && mid.is_finite() {
+                    return Some(mid);
+                }
+            }
+        }
+
+        None
     }
 
     /// Simulate order matching with latency.
@@ -74,12 +211,15 @@ impl PaperSimulator {
             tokio::time::sleep(Duration::from_millis(self.settings.latency_simulation_ms)).await;
         }
 
+        // Key by (symbol, target_venue) — NOT just symbol.
+        // Each venue has its own independent order book.
+        let key = (order.symbol.clone(), order.venue);
         let mut matchers = self.matchers.lock().unwrap();
         let matcher = matchers
-            .entry(order.symbol.clone())
+            .entry(key)
             .or_insert_with(|| OrderBookMatcher::new(self.settings.match_l2_depth));
 
-        // Match the order
+        // Match the order against this venue's book
         let (filled_size, avg_price, slippage_bps) = matcher.match_order(
             order.side,
             order.size,
@@ -258,7 +398,7 @@ mod tests {
 
         let sim = PaperSimulator::new(settings);
 
-        // Set up order book
+        // Set up order book for Exchange A
         sim.update_book(BookUpdate {
             venue: VenueId::EXCHANGE_A,
             symbol: Symbol::new("BTC"),
@@ -268,6 +408,7 @@ mod tests {
             local_ts_ns: 0,
         });
 
+        // Order targets Exchange A — should fill
         let order = OrderRequest::market_buy(
             VenueId::EXCHANGE_A,
             Symbol::new("BTC"),
@@ -276,5 +417,103 @@ mod tests {
 
         let ack = sim.submit_order(&order).await.unwrap();
         assert_eq!(ack.order_id, OrderId(1));
+    }
+
+    #[tokio::test]
+    async fn test_per_venue_isolation() {
+        let settings = SimulationSettings {
+            enabled: true,
+            use_real_data: false,
+            latency_simulation_ms: 0,
+            fee_tier_bps: 2.5,
+            match_l2_depth: 10,
+        };
+
+        let sim = PaperSimulator::new(settings);
+
+        // Set up book for Exchange A only
+        sim.update_book_from_tick(&Symbol::new("BTC"), 60000.0, VenueId::EXCHANGE_A);
+
+        // Order targeting Exchange B — should fail (no book for B)
+        let order_b = OrderRequest::market_buy(
+            VenueId::EXCHANGE_B,
+            Symbol::new("BTC"),
+            0.5,
+        );
+        let result = sim.submit_order(&order_b).await;
+        assert!(result.is_err(), "Exchange B has no book — should fail");
+
+        // Now populate Exchange B's book
+        sim.update_book_from_tick(&Symbol::new("BTC"), 59995.0, VenueId::EXCHANGE_B);
+
+        // Order targeting Exchange B — should now fill
+        let result = sim.submit_order(&order_b).await;
+        assert!(result.is_ok(), "Exchange B now has book — should fill");
+    }
+
+    #[tokio::test]
+    async fn test_per_venue_different_prices() {
+        let settings = SimulationSettings {
+            enabled: true,
+            use_real_data: false,
+            latency_simulation_ms: 0,
+            fee_tier_bps: 2.5,
+            match_l2_depth: 10,
+        };
+
+        let sim = PaperSimulator::new(settings);
+
+        // Different prices per venue (the core alpha scenario)
+        sim.update_book_from_tick(&Symbol::new("ZEC"), 37.00, VenueId::EXCHANGE_A);
+        sim.update_book_from_tick(&Symbol::new("ZEC"), 36.95, VenueId::EXCHANGE_B);
+
+        // Buy on Exchange B (cheaper)
+        let order_b = OrderRequest::market_buy(
+            VenueId::EXCHANGE_B,
+            Symbol::new("ZEC"),
+            1.0,
+        );
+        let fill_b = sim.submit_order(&order_b).await.unwrap();
+
+        // Buy on Exchange A (more expensive)
+        let order_a = OrderRequest::market_buy(
+            VenueId::EXCHANGE_A,
+            Symbol::new("ZEC"),
+            1.0,
+        );
+        let fill_a = sim.submit_order(&order_a).await.unwrap();
+
+        // B should be cheaper than A (Hyperliquid spread model is wider, but base price is lower)
+        // The fills should reflect each venue's independent pricing
+        let pos_b = sim.get_positions().await.unwrap().iter()
+            .find(|p| p.venue == VenueId::EXCHANGE_B).unwrap().entry_price;
+        let pos_a = sim.get_positions().await.unwrap().iter()
+            .find(|p| p.venue == VenueId::EXCHANGE_A).unwrap().entry_price;
+
+        // B's entry should be based on B's book (36.95), A's on A's book (37.00)
+        assert!(pos_b < pos_a, "B should be cheaper: B={} vs A={}", pos_b, pos_a);
+    }
+
+    #[test]
+    fn test_is_venue_liquid() {
+        let settings = SimulationSettings {
+            enabled: true,
+            use_real_data: false,
+            latency_simulation_ms: 0,
+            fee_tier_bps: 2.5,
+            match_l2_depth: 10,
+        };
+
+        let sim = PaperSimulator::new(settings);
+
+        // Exchange A not liquid yet
+        assert!(!sim.is_venue_liquid(&Symbol::new("BTC"), VenueId::EXCHANGE_A));
+
+        // Populate A
+        sim.update_book_from_tick(&Symbol::new("BTC"), 60000.0, VenueId::EXCHANGE_A);
+        assert!(sim.is_venue_liquid(&Symbol::new("BTC"), VenueId::EXCHANGE_A));
+
+        // Exchange B still not liquid
+        assert!(!sim.is_venue_liquid(&Symbol::new("BTC"), VenueId::EXCHANGE_B));
     }
 }
