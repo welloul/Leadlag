@@ -34,7 +34,7 @@ max_rtt_ms = 100
 # --- Strategy Parameters ---
 
 [strategy]
-symbols = ["BTC", "ETH", "SOL"]
+symbols = ["ZEC", "XMR", "LINK"]
 window_size_ticks = 256     # Must be power of 2 for ring buffer optimization
 min_correlation_r = 0.85    # Threshold to trigger a signal
 hysteresis_buffer = 0.10    # Requirement to flip Lead/Lag roles

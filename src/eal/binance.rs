@@ -45,7 +45,8 @@ impl BinanceExchange {
         symbol: &Symbol,
         sender: Sender<Arc<Tick>>,
     ) -> Result<(), ExchangeError> {
-        let ws_symbol = symbol.0.to_lowercase();
+        // Binance Futures uses {symbol}usdt@trade format (e.g., zecusdt@trade)
+        let ws_symbol = format!("{}usdt", symbol.0.to_lowercase());
         let url = format!("wss://fstream.binance.com/ws/{ws_symbol}@trade");
 
         let (ws_stream, _) = connect_async(&url)
