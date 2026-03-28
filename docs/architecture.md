@@ -169,6 +169,7 @@
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
 │                         HYSTERESIS STATE MACHINE                                │
+│                    (Streak-Based, No Magnitude Check)                           │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
 │                              ┌─────────────────┐                                │
@@ -187,8 +188,8 @@
 │           │    current_r=r_a│                    │    current_r=r_b│            │
 │           └────────┬────────┘                    └────────┬────────┘            │
 │                    │                                      │                     │
-│                    │ B dominant + margin                  │ A dominant + margin │
-│                    │ r_b > r_a + threshold                │ r_a > r_b + thresh  │
+│                    │ B dominant (any margin)              │ A dominant          │
+│                    │ r_b > r_a                            │ r_a > r_b           │
 │                    │                                      │                     │
 │                    ▼                                      ▼                     │
 │           ┌─────────────────┐                    ┌─────────────────┐            │
@@ -213,6 +214,9 @@
 │           └─────────────────┘                    └─────────────────┘            │
 │                                                                                 │
 │  ─────────────────────────────────────────────────────────────────────────────  │
+│                                                                                 │
+│  KEY CHANGE: No magnitude threshold check. Flip based on consistent leader      │
+│  change (streak) only. Correlation quality filtered by min_correlation_r.       │
 │                                                                                 │
 │  STREAK RESET CONDITIONS:                                                       │
 │  ┌─────────────────────────────────────────────────────────────────────────┐   │

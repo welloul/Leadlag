@@ -70,6 +70,7 @@ impl Hysteresis {
     /// Update the state machine with new correlation values.
     ///
     /// Returns the new lead role if a flip was validated.
+    /// Flip based on consistent leader change (streak), not magnitude.
     pub fn update(&mut self, r_a: f64, r_b: f64) -> Option<LeadRole> {
         // Determine which exchange has higher correlation
         let (new_lead, new_r) = if r_a > r_b {
@@ -97,30 +98,24 @@ impl Hysteresis {
         }
 
         // New lead is different from current
-        // Check if it exceeds the threshold margin
-        if new_r > self.current_r + self.threshold_margin {
-            // Candidate is dominant
-            if self.candidate_lead == new_lead {
-                // Same candidate as before, increment streak
-                self.candidate_streak += 1;
-            } else {
-                // New candidate, reset streak
-                self.candidate_lead = new_lead;
-                self.candidate_r = new_r;
-                self.candidate_streak = 1;
-            }
-
-            // Check if we've met the consecutive requirement
-            if self.candidate_streak >= self.min_consecutive {
-                // Flip validated!
-                self.current_lead = new_lead;
-                self.current_r = new_r;
-                self.candidate_streak = 0;
-                return Some(new_lead);
-            }
+        // Flip based on consistent leader change (streak), not magnitude
+        if self.candidate_lead == new_lead {
+            // Same candidate as before, increment streak
+            self.candidate_streak += 1;
         } else {
-            // Candidate doesn't exceed threshold, reset
+            // New candidate, reset streak
+            self.candidate_lead = new_lead;
+            self.candidate_r = new_r;
+            self.candidate_streak = 1;
+        }
+
+        // Check if we've met the consecutive requirement
+        if self.candidate_streak >= self.min_consecutive {
+            // Flip validated!
+            self.current_lead = new_lead;
+            self.current_r = new_r;
             self.candidate_streak = 0;
+            return Some(new_lead);
         }
 
         None

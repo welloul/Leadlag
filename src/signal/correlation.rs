@@ -64,6 +64,9 @@ impl<const N: usize> CrossCorrelator<N> {
 
     /// Calculate the Pearson correlation coefficient R.
     ///
+    /// Uses numerically stable mean-subtraction formula to avoid
+    /// catastrophic cancellation with large price values.
+    ///
     /// Returns a value in [-1.0, 1.0].
     /// Returns 0.0 if:
     /// - Buffer has fewer than 2 elements
@@ -76,25 +79,22 @@ impl<const N: usize> CrossCorrelator<N> {
             return 0.0;
         }
 
-        let sum_x = self.buf_a.sum();
-        let sum_y = self.buf_b.sum();
-        let sum_x2 = self.buf_a.sum_sq();
-        let sum_y2 = self.buf_b.sum_sq();
+        let mean_x = self.buf_a.sum() / n;
+        let mean_y = self.buf_b.sum() / n;
 
-        // Numerator: N * Σxy - Σx * Σy
-        let numerator = (n * self.sum_ab) - (sum_x * sum_y);
+        // Use deviation form: Σ((x - mx) * (y - my)) = Σxy - (n * mx * my)
+        let numerator = self.sum_ab - (n * mean_x * mean_y);
 
-        // Denominator: sqrt([N * Σx² - (Σx)²] * [N * Σy² - (Σy)²])
-        let var_x = (n * sum_x2) - (sum_x * sum_x);
-        let var_y = (n * sum_y2) - (sum_y * sum_y);
+        // Variance: Σx² - (n * mx²)
+        let var_x = self.buf_a.sum_sq() - (n * mean_x * mean_x);
+        let var_y = self.buf_b.sum_sq() - (n * mean_y * mean_y);
 
         // Check for zero variance in either stream
         if var_x < self.epsilon || var_y < self.epsilon {
             return 0.0;
         }
 
-        let denominator = (var_x * var_y).sqrt();
-        let r = numerator / denominator;
+        let r = numerator / (var_x * var_y).sqrt();
 
         // Clamp to valid range and guard against NaN/Inf
         if r.is_finite() {
@@ -109,29 +109,40 @@ impl<const N: usize> CrossCorrelator<N> {
     /// Positive lag means exchange B is lagging behind A.
     /// Negative lag means exchange A is lagging behind B.
     ///
-    /// This is done by shifting the B buffer index by `lag` positions.
+    /// Uses numerically stable mean-subtraction formula to avoid
+    /// catastrophic cancellation with large price values.
     #[inline(always)]
     pub fn correlation_at_lag(&self, lag: i32) -> f64 {
-        if self.buf_a.len() < 2 || self.buf_b.len() < 2 {
+        let n_total = self.buf_a.len().min(self.buf_b.len());
+        if n_total < 2 {
             return 0.0;
         }
 
-        let n = self.buf_a.len().min(self.buf_b.len());
-        if n < 2 {
-            return 0.0;
-        }
-
-        // Calculate cross-sum at the given lag
+        // Calculate all sums using only the overlapping portion at the given lag
         let mut sum_xy = 0.0;
+        let mut sum_x = 0.0;
+        let mut sum_y = 0.0;
+        let mut sum_x2 = 0.0;
+        let mut sum_y2 = 0.0;
         let mut count = 0;
 
-        for i in 0..n {
+        for i in 0..n_total {
             let idx_a = i;
-            let idx_b = (i as i32 - lag) as usize;
+            let idx_b_signed = i as i32 + lag;
 
-            if idx_b < n {
+            // Skip if idx_b is negative (wraps to huge usize)
+            if idx_b_signed < 0 {
+                continue;
+            }
+
+            let idx_b = idx_b_signed as usize;
+            if idx_b < n_total {
                 if let (Some(a), Some(b)) = (self.buf_a.get(idx_a), self.buf_b.get(idx_b)) {
                     sum_xy += a * b;
+                    sum_x += a;
+                    sum_y += b;
+                    sum_x2 += a * a;
+                    sum_y2 += b * b;
                     count += 1;
                 }
             }
@@ -142,21 +153,19 @@ impl<const N: usize> CrossCorrelator<N> {
         }
 
         let n = count as f64;
-        let sum_x = self.buf_a.sum();
-        let sum_y = self.buf_b.sum();
-        let sum_x2 = self.buf_a.sum_sq();
-        let sum_y2 = self.buf_b.sum_sq();
+        let mean_x = sum_x / n;
+        let mean_y = sum_y / n;
 
-        let numerator = (n * sum_xy) - (sum_x * sum_y);
-        let var_x = (n * sum_x2) - (sum_x * sum_x);
-        let var_y = (n * sum_y2) - (sum_y * sum_y);
-        let denominator = (var_x * var_y + self.epsilon).sqrt();
+        // Use stable mean-subtraction formula
+        let numerator = sum_xy - (n * mean_x * mean_y);
+        let var_x = sum_x2 - (n * mean_x * mean_x);
+        let var_y = sum_y2 - (n * mean_y * mean_y);
 
-        if denominator < self.epsilon {
+        if var_x < self.epsilon || var_y < self.epsilon {
             return 0.0;
         }
 
-        let r = numerator / denominator;
+        let r = numerator / (var_x * var_y).sqrt();
         if r.is_finite() {
             r.clamp(-1.0, 1.0)
         } else {

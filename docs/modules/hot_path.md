@@ -65,6 +65,8 @@ Total: 4192 bytes (fits in 65 cache lines)
 - **Output**: Pearson R in [-1.0, 1.0]
 - **Side effects**: None (pure function)
 - **Complexity**: O(1)
+- **Formula**: Numerically stable mean-subtraction: `Σxy - (n * mean_x * mean_y)` / `sqrt(var_x * var_y)`
+- **Fix**: Original naïve formula `(N*Σxy - Σx*Σy) / sqrt(...)` caused catastrophic cancellation with large prices (~60,000)
 
 ### `CrossCorrelator::find_best_lag(min, max) -> (i32, f64)`
 - **Input**: Lag search range

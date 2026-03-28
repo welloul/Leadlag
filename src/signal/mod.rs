@@ -69,7 +69,8 @@ impl<const N: usize> SignalPipeline<N> {
         correlator.push(pair.price_a, pair.price_b);
 
         // Need at least window_size samples for reliable correlation
-        if correlator.len() < self.settings.window_size_ticks / 2 {
+        // Lag detection needs FULL window, not half
+        if correlator.len() < self.settings.window_size_ticks {
             return None;
         }
 
@@ -81,15 +82,15 @@ impl<const N: usize> SignalPipeline<N> {
         // by finding the lag that maximizes correlation
         let (best_lag, best_r) = correlator.find_best_lag(-10, 10);
 
-        // Determine which exchange is leading based on the lag
+        // Determine leader from actual best lag (not hardcoded ±10)
         let (r_a, r_b) = if best_lag < 0 {
-            // Negative lag means A leads B
+            // A leads B (negative lag has higher correlation)
             (best_r, r)
         } else if best_lag > 0 {
-            // Positive lag means B leads A
+            // B leads A (positive lag has higher correlation)
             (r, best_r)
         } else {
-            // No lag, both equal
+            // No clear leader, both equal
             (r, r)
         };
 

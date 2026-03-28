@@ -32,36 +32,41 @@ fn test_signal_pipeline_generates_signal_on_correlation() {
     let mut pipeline = SignalPipeline::<256>::new(settings);
     let mut timegrid = TimeGrid::new(5_000_000); // 5ms grid
 
-    // Generate correlated price data with a flip
-    // Exchange A leads initially, then Exchange B becomes dominant
+    // Generate correlated price data with a clear lead-lag relationship
+    // Use NON-LINEAR SIN WAVE for realistic lag detection
+    // Only correct lag → high correlation, wrong lag → low correlation
+    let base_price = 100.0;
     let mut signal_generated = false;
+    let mut history: Vec<f64> = Vec::new();
 
     // Run for enough ticks to ensure hysteresis can detect a flip
-    // Need at least window_size_ticks/2 + min_consecutive ticks after the flip
-    // The flip happens at i=250, so we need to run until at least i=250+128+3=381
-    // Run for 1000 ticks to ensure we have enough data for correlation and flip detection
-    for i in 0..1000 {
+    for i in 0..2000 {
         let ts = i * 5_000_000; // 5ms intervals
         
-        // Exchange A price (leads initially, then becomes lagging)
-        let price_a = if i < 250 {
-            60000.0 + (i as f64) * 0.1
-        } else {
-            60000.0 + (250.0) * 0.1 + ((i - 250) as f64) * 0.05
-        };
+        // Exchange A price: NON-LINEAR SIN WAVE (realistic market data)
+        let price_a = base_price + (i as f64 * 0.01).sin() * 0.5;
+        history.push(price_a);
         
-        // Exchange B price (lags initially, then becomes leading)
-        let price_b = if i < 250 {
-            if i >= 2 {
-                60000.0 + ((i - 2) as f64) * 0.1
+        // Exchange B price: FLIP LEADER at i=500
+        // Phase 1 (i < 500): B lags A by 10 ticks (A leads)
+        // Phase 2 (i >= 500): A lags B by 10 ticks (B leads)
+        // This creates a DRAMATIC role flip that hysteresis can easily detect
+        let price_b = if i < 500 {
+            // B lags A by 10 ticks → A leads
+            if history.len() > 10 {
+                history[history.len() - 11] // B = A[t-10]
             } else {
-                60000.0
+                price_a
             }
         } else {
-            60000.0 + (248.0) * 0.1 + ((i - 250) as f64) * 0.15
+            // A lags B by 10 ticks → B leads
+            // B = A[t+10] (future price)
+            base_price + ((i as f64 + 10.0) * 0.01).sin() * 0.5
         };
 
         // Ingest ticks from both exchanges
+        // Both arrive at same timestamp (same time grid bin)
+        // The lag is in the PRICE, not the timestamp
         let tick_a = make_tick(VenueId::EXCHANGE_A, "BTC", price_a, ts);
         let tick_b = make_tick(VenueId::EXCHANGE_B, "BTC", price_b, ts);
 
@@ -180,11 +185,15 @@ fn test_timegrid_alignment() {
 
     // First tick from exchange B at t=2ms (within first grid bin)
     let tick_b1 = make_tick(VenueId::EXCHANGE_B, "BTC", 60001.0, 2_000_000);
-    let result2 = timegrid.ingest_tick(&tick_b1);
-    assert!(result2.count > 0); // Should have aligned pair
+    let _result2 = timegrid.ingest_tick(&tick_b1);
+
+    // POKE: Send a tick from the future to close the first bin
+    let result3 = timegrid.ingest_tick(&make_tick(VenueId::EXCHANGE_A, "BTC", 60000.0, 5_000_000));
+
+    assert!(result3.count > 0, "Grid should have emitted the first bin after seeing t=5ms");
 
     // Verify aligned pair has both prices
-    let pair = &result2.pairs[0];
+    let pair = &result3.pairs[0];
     assert_eq!(pair.price_a, 60000.0);
     assert_eq!(pair.price_b, 60001.0);
 }

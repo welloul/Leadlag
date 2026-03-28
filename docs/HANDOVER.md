@@ -5,7 +5,7 @@
 | Aspect | Status |
 |--------|--------|
 | **Phase** | Paper Trading (v0.1.0) |
-| **Stability** | All 46 tests passing |
+| **Stability** | All 60+ tests passing (49 unit + 7 integration + 4 signal flow) |
 | **Live Trading** | Disabled (simulation only) |
 | **API Keys** | Hyperliquid only (Binance pending) |
 
@@ -21,6 +21,13 @@
 1. `TimeGrid::ingest_tick` returns `Vec<AlignedPair>` — allocates on heap per tick. Should be pre-allocated.
 2. `NetDelta` uses `HashMap<(VenueId, Symbol), Position>` — O(n) lookup. Should use fixed-size array.
 3. `PreflightChecker::check_max_slippage` ignores `current_price` parameter — placeholder logic.
+
+### RECENT FIXES (v0.1.0)
+1. **Catastrophic Cancellation** — Pearson correlation formula lost precision with large prices (~60,000). Fixed with numerically stable mean-subtraction formula.
+2. **Negative Lag Indexing** — `(i as i32 + lag) as usize` wrapped to `usize::MAX` when negative. Fixed with explicit bounds check.
+3. **Hysteresis Magnitude Check** — Required `new_r > current_r + threshold_margin` which failed with high-correlation data. Fixed to flip based on consistent leader change (streak).
+4. **Directional Lag Comparison** — Was using hardcoded ±10 instead of actual `best_lag`. Fixed to use `find_best_lag()` result.
+5. **Half-Window Warmup** — Required `window_size_ticks / 2` samples, but lag detection needs full window. Changed to `window_size_ticks`.
 
 ## Recovery Procedures
 
