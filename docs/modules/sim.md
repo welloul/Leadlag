@@ -1,7 +1,7 @@
 # Simulator Module — Paper Trading
 
 ## Objective
-Simulate realistic exchange behavior for paper trading. Matches orders against L2 order book depth, applies fees and slippage, and tracks alpha decay statistics.
+Simulate realistic exchange behavior for paper trading. Matches orders against L2 order book depth, applies fees and slippage, and tracks alpha decay statistics. **Used as the primary order execution engine in main.rs** (replaced `MockExchange` in v0.1.1).
 
 ## Latency Profile
 

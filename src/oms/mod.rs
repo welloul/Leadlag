@@ -257,10 +257,7 @@ impl OrderManagementSystem {
             Err(e) => {
                 // Remove pending order on failure
                 self.pending_orders.remove(&order.client_order_id);
-                Err(RiskError::ExceedsMaxNotional {
-                    notional: 0.0,
-                    max: 0.0,
-                })
+                Err(RiskError::ExecutionFailed(e.to_string()))
             }
         }
     }

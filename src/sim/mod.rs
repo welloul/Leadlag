@@ -250,6 +250,7 @@ mod tests {
     async fn test_paper_simulator_basic_fill() {
         let settings = SimulationSettings {
             enabled: true,
+            use_real_data: false,
             latency_simulation_ms: 0,
             fee_tier_bps: 2.5,
             match_l2_depth: 10,

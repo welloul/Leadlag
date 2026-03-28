@@ -8,10 +8,10 @@ Validate trade signals against risk limits, track cross-venue positions, and exe
 | Operation | O(n) | Cycles | Notes |
 |-----------|------|--------|-------|
 | Preflight checks | O(1) | ~500 | 6 sequential checks |
-| Net delta lookup | O(n) | ~200 | HashMap iteration |
+| Net delta lookup | O(1) | ~50 | Fixed-size array (was HashMap) |
 | Self-trade check | O(p) | ~100 | p = pending orders |
 | Order creation | O(1) | ~50 | Stack allocation |
-| **Total** | **O(n+p)** | **~850** | **~1.3µs @ 3GHz** |
+| **Total** | **O(p)** | **~700** | **~1.1µs @ 3GHz** |
 
 ## Invariants
 
@@ -19,17 +19,21 @@ Validate trade signals against risk limits, track cross-venue positions, and exe
 2. **Kill switch atomic**: Uses `AtomicBool` with `SeqCst` ordering
 3. **No blocking**: OMS never blocks on DB writes (optimistic updates)
 4. **Self-trade prevention**: Cannot submit opposite side order to same venue/symbol
+5. **Error propagation**: Execution errors wrapped in `RiskError::ExecutionFailed` — never discarded
 
-## Memory Layout
+## Memory Layout (Updated v0.1.1)
 
 ```
-NetDelta:
-┌─────────────────────────────────────────┐
-│ positions: HashMap<(VenueId,Symbol),Position> │ ← Heap allocated
-│ daily_realized_pnl: f64                 │
-│ daily_loss_limit: f64                   │
-│ kill_switches: HashMap<VenueId,Arc<AtomicBool>>│
-└─────────────────────────────────────────┘
+NetDelta (fixed-size array, O(1) lookup):
+┌──────────────────────────────────────────────────────────┐
+│ positions: [[Option<Position>; 16]; 2]                   │ ← Fixed-size array
+│   [venue_idx][symbol_idx] → Option<Position>             │
+│ symbol_indices: Vec<(Symbol, usize)>                     │ ← Symbol → index map
+│ daily_realized_pnl: f64                                  │
+│ daily_loss_limit: f64                                    │
+│ kill_switches: [Option<Arc<AtomicBool>>; 2]              │
+└──────────────────────────────────────────────────────────┘
+Previously: HashMap<(VenueId, Symbol), Position> — O(n) lookup
 
 OrderManagementSystem:
 ┌─────────────────────────────────────────┐
@@ -49,7 +53,7 @@ OrderManagementSystem:
 3. check_signal_ttl()       → Is signal still fresh (<150ms)?
 4. check_correlation()      → Is R above minimum threshold?
 5. check_max_notional()     → Would order exceed max size?
-6. check_max_slippage()     → Would slippage exceed limit?
+6. check_max_slippage()     → Would slippage exceed limit? (size-impact model)
 ```
 
 ## Key Functions
@@ -58,7 +62,7 @@ OrderManagementSystem:
 - **Input**: Trade signal, current price, execution backend
 - **Output**: Order acknowledgment or risk error
 - **Side effects**: Creates pending order, submits to executor
-- **Complexity**: O(n + p)
+- **Complexity**: O(p) where p = pending orders
 
 ### `process_fill(fill)`
 - **Input**: Fill event from exchange
@@ -72,7 +76,7 @@ OrderManagementSystem:
 - **Side effects**: Updates position size, entry price, daily PnL
 - **Complexity**: O(1)
 
-## Risk Error Types
+## Risk Error Types (Updated v0.1.1)
 
 ```rust
 pub enum RiskError {
@@ -83,4 +87,8 @@ pub enum RiskError {
     SelfTrade,
     KillSwitchActive { venue },
     CorrelationTooLow { r, min },
+    ExecutionFailed(String),  // v0.1.1: wraps ExecutionError
 }
+```
+
+**v0.1.1 Fix:** `ExecutionFailed` was added because previously execution errors were discarded and replaced with a misleading `ExceedsMaxNotional { 0.0, 0.0 }`. Now the original error message is preserved.

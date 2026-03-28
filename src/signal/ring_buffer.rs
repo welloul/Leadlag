@@ -42,7 +42,10 @@ impl<const N: usize> RingBuffer<N> {
     /// Panics if N is not a power of 2.
     #[inline(always)]
     pub fn new() -> Self {
-        assert!(N.is_power_of_two(), "RingBuffer size must be a power of 2, got {N}");
+        assert!(
+            N.is_power_of_two(),
+            "RingBuffer size must be a power of 2, got {N}"
+        );
         assert!(N > 0, "RingBuffer size must be > 0");
 
         Self {

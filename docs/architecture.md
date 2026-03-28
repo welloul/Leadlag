@@ -3,7 +3,7 @@
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                           TokioParasite v0.1.0                                  │
+│                           TokioParasite v0.1.1                                  │
 │                     Lead-Lag Arbitrage Engine                                    │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
@@ -12,55 +12,47 @@
 │  │  ┌───────────────────┐    ┌───────────────────┐                         │   │
 │  │  │   WebSocket A     │    │   WebSocket B     │                         │   │
 │  │  │   (Binance)       │    │   (Hyperliquid)   │                         │   │
-│  │  └─────────┬─────────┘    └─────────┬─────────┘                         │   │
-│  │            │ Arc<Tick>              │ Arc<Tick>                          │   │
-│  │            ▼                        ▼                                    │   │
+│  │  └─────┬──────┬──────┘    └─────┬──────┬──────┘                         │   │
+│  │        │ Arc<Tick>              │ Arc<Tick>                              │   │
+│  │        │ Arc<BookUpdate>        │ Arc<BookUpdate>                        │   │
+│  │        ▼                        ▼                                        │   │
 │  │  ┌─────────────────────────────────────────────────────────────────┐   │   │
 │  │  │              Fan-Out Ingestion (try_send only)                   │   │   │
 │  │  └─────────────────────────────────────────────────────────────────┘   │   │
 │  └─────────────────────────────────────────────────────────────────────────┘   │
-│            │                              │                                     │
-│            │ crossbeam::bounded           │ crossbeam::bounded                  │
-│            ▼                              ▼                                     │
+│     │         │                    │         │                                 │
+│     │ tick    │ book               │ tick    │ book                            │
+│     │ crossbeam::bounded          │ crossbeam::bounded                        │
+│     ▼         ▼                    ▼         ▼                                 │
 │  ┌─────────────────────────────────────────────────────────────────────────┐   │
-│  │                      SYNC HOT PATH (CPU Core 1)                         │   │
-│  │                      No async, No locks, No alloc                        │   │
-│  │  ┌───────────────┐   ┌───────────────┐   ┌───────────────┐              │   │
-│  │  │  Time-Grid    │──▶│  Ring Buffer  │──▶│  Cross-       │              │   │
-│  │  │  Alignment    │   │  256 slots    │   │  Correlation  │              │   │
-│  │  │  (Forward-    │   │  (Bitwise     │   │  (Pearson R)  │              │   │
-│  │  │   Fill)       │   │   Mask)       │   │               │              │   │
-│  │  └───────────────┘   └───────────────┘   └───────┬───────┘              │   │
-│  │                                                   │                      │   │
-│  │                                                   ▼                      │   │
-│  │                                          ┌───────────────┐              │   │
-│  │                                          │  Hysteresis   │              │   │
-│  │                                          │  State Machine│              │   │
-│  │                                          └───────┬───────┘              │   │
-│  │                                                  │                       │   │
-│  │                                                  ▼                       │   │
-│  │                                          ┌───────────────┐              │   │
-│  │                                          │ Trade Signal  │              │   │
-│  │                                          └───────┬───────┘              │   │
-│  └──────────────────────────────────────────────────┼──────────────────────┘   │
-│                                                     │                          │
-│                                                     │ crossbeam                │
-│                                                     ▼                          │
-│  ┌─────────────────────────────────────────────────────────────────────────┐   │
-│  │                      ASYNC OMS ZONE (Tokio Runtime)                     │   │
-│  │  ┌───────────────┐   ┌───────────────┐   ┌───────────────┐              │   │
-│  │  │  Preflight    │──▶│  Net Delta    │──▶│  Execution    │              │   │
-│  │  │  Checks       │   │  Tracker      │   │  Engine       │              │   │
-│  │  │  (6 gates)    │   │  (Cross-venue)│   │  (Paper/Live) │              │   │
-│  │  └───────────────┘   └───────────────┘   └───────┬───────┘              │   │
-│  │                                                   │                      │   │
-│  │                                          ┌────────┴────────┐             │   │
-│  │                                          ▼                 ▼             │   │
-│  │                                  ┌───────────────┐ ┌───────────────┐    │   │
-│  │                                  │   Paper       │ │   Live        │    │   │
-│  │                                  │   Simulator   │ │   Exchange    │    │   │
-│  │                                  │   (L2 Match)  │ │   (REST/WS)   │    │   │
-│  │                                  └───────────────┘ └───────────────┘    │   │
+│  │                      MAIN LOOP (Async Tokio Task)                        │   │
+│  │                                                                          │   │
+│  │  ┌─────────────────────── STRATEGY ROUTING ──────────────────────────┐  │   │
+│  │  │                                                                   │  │   │
+│  │  │  ┌─────────────────────────┐  ┌─────────────────────────┐        │  │   │
+│  │  │  │ Correlation-Hysteresis  │  │     Impulse-OBI         │        │  │   │
+│  │  │  │                         │  │                         │        │  │   │
+│  │  │  │ tick → timegrid.align() │  │ tick → process_tick()   │        │  │   │
+│  │  │  │       → process_pair()  │  │       → ImpulseDetector │        │  │   │
+│  │  │  │       → correlation     │  │       → MidpriceTracker │        │  │   │
+│  │  │  │       → hysteresis      │  │                         │        │  │   │
+│  │  │  │       → signal          │  │ book → process_book()   │        │  │   │
+│  │  │  │                         │  │       → ObiDivergence   │        │  │   │
+│  │  │  │                         │  │       → OBI calculation │        │  │   │
+│  │  │  │                         │  │                         │        │  │   │
+│  │  │  │                         │  │ ImpulseObiEngine        │        │  │   │
+│  │  │  │                         │  │ ├─ Impulse+OBI → HIGH   │        │  │   │
+│  │  │  │                         │  │ ├─ Impulse only → MED   │        │  │   │
+│  │  │  │                         │  │ └─ OBI only → MED       │        │  │   │
+│  │  │  └────────────┬────────────┘  └────────────┬────────────┘        │  │   │
+│  │  │               │                            │                      │  │   │
+│  │  │               └──────────┬─────────────────┘                      │  │   │
+│  │  │                          ▼                                         │  │   │
+│  │  │                    TradeSignal                                     │  │   │
+│  │  └───────────────────────────────────────────────────────────────────┘  │   │
+│  │                                                                          │   │
+│  │  signal → oms.process_signal() → PaperSimulator                         │   │
+│  │                                                                          │   │
 │  └─────────────────────────────────────────────────────────────────────────┘   │
 │                                                     │                          │
 │                                                     │ try_send                 │
@@ -77,89 +69,59 @@
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Data Flow: Tick to Trade
+## Data Flow: Dual-Strategy Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                              DATA FLOW DIAGRAM                                  │
+│                         DUAL-STRATEGY DATA FLOW                                 │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
-│  Exchange A WS                                                                  │
-│       │                                                                         │
-│       │ Arc<Tick>                                                               │
-│       ▼                                                                         │
-│  ┌─────────────┐                                                                │
-│  │ try_send()  │──── Success ────▶ Channel A                                    │
-│  └─────────────┘                      │                                         │
-│       │                               │                                         │
-│       │ Channel Full                  │                                         │
-│       ▼                               │                                         │
-│  ┌─────────────┐                      │                                         │
-│  │   DROP      │                      │                                         │
-│  │ (log warn)  │                      │                                         │
-│  └─────────────┘                      │                                         │
-│                                       │                                         │
-│  Exchange B WS                         │                                         │
-│       │                                │                                         │
-│       │ Arc<Tick>                      │                                         │
-│       ▼                                │                                         │
-│  ┌─────────────┐                       │                                         │
-│  │ try_send()  │──── Success ────▶ Channel B                                    │
-│  └─────────────┘                      │                                         │
-│                                       │                                         │
-│                                       ▼                                         │
-│                              ┌─────────────────┐                                │
-│                              │  Hot Path Loop  │                                │
-│                              │  (spin_loop)    │                                │
-│                              └────────┬────────┘                                │
-│                                       │                                         │
-│                                       ▼                                         │
-│  ┌──────────────────────────────────────────────────────────────────────────┐  │
-│  │                         HOT PATH PIPELINE                                │  │
-│  │                                                                          │  │
-│  │  ┌──────────────┐    ┌──────────────┐    ┌──────────────┐               │  │
-│  │  │ 1. Ingest    │───▶│ 2. Time-Grid │───▶│ 3. Ring Buf  │               │  │
-│  │  │    Tick      │    │    Align     │    │    Push      │               │  │
-│  │  │    (~50ns)   │    │    (~100ns)  │    │    (~50ns)   │               │  │
-│  │  └──────────────┘    └──────────────┘    └──────┬───────┘               │  │
-│  │                                                  │                       │  │
-│  │                                                  ▼                       │  │
-│  │                                          ┌──────────────┐               │  │
-│  │                                          │ 4. Update    │               │  │
-│  │                                          │    Running   │               │  │
-│  │                                          │    Sums      │               │  │
-│  │                                          │    (~20ns)   │               │  │
-│  │                                          └──────┬───────┘               │  │
-│  │                                                  │                       │  │
-│  │                                                  ▼                       │  │
-│  │                                          ┌──────────────┐               │  │
-│  │                                          │ 5. Calc      │               │  │
-│  │                                          │    Pearson R │               │  │
-│  │                                          │    (~100ns)  │               │  │
-│  │                                          └──────┬───────┘               │  │
-│  │                                                  │                       │  │
-│  │                                                  ▼                       │  │
-│  │                                          ┌──────────────┐               │  │
-│  │                                          │ 6. Hysteresis│               │  │
-│  │                                          │    Update    │               │  │
-│  │                                          │    (~30ns)   │               │  │
-│  │                                          └──────┬───────┘               │  │
-│  │                                                  │                       │  │
-│  │                                                  ▼                       │  │
-│  │                                          ┌──────────────┐               │  │
-│  │                                          │ 7. Signal?   │               │  │
-│  │                                          │    R > 0.85  │               │  │
-│  │                                          └──────┬───────┘               │  │
-│  │                                                  │                       │  │
-│  │                                         ┌────────┴────────┐              │  │
-│  │                                         ▼                 ▼              │  │
-│  │                                  ┌────────────┐   ┌────────────┐        │  │
-│  │                                  │ No Signal  │   │  Signal!   │        │  │
-│  │                                  │ Continue   │   │  Send to   │        │  │
-│  │                                  │ Loop       │   │  OMS       │        │  │
-│  │                                  └────────────┘   └────────────┘        │  │
-│  │                                                                          │  │
-│  └──────────────────────────────────────────────────────────────────────────┘  │
+│  CORRELATION-HYSTERESIS PATH:                                                   │
+│  ─────────────────────────────                                                  │
+│  Tick A ──┐                                                                     │
+│           ├──▶ TimeGrid.ingest_tick() ──▶ AlignedPair ──▶ process_pair()       │
+│  Tick B ──┘     (forward-fill)              (price_a,       │                  │
+│                                              price_b)        │                  │
+│                                                              ▼                  │
+│                                                   CrossCorrelator.push()        │
+│                                                              │                  │
+│                                                              ▼                  │
+│                                                   find_best_lag(-10, 10)        │
+│                                                              │                  │
+│                                                              ▼                  │
+│                                                   Hysteresis.update(r_a, r_b)   │
+│                                                              │                  │
+│                                                   ┌──────────┴──────────┐       │
+│                                                   │  Role flip?         │       │
+│                                                   │  best_r >= 0.85?    │       │
+│                                                   └──────────┬──────────┘       │
+│                                                              │ Yes              │
+│                                                              ▼                  │
+│                                                        TradeSignal              │
+│                                                                                 │
+│  IMPULSE-OBI PATH:                                                              │
+│  ─────────────────                                                              │
+│  Tick A ──▶ process_tick() ──▶ ImpulseDetector.process_tick()                   │
+│                                    │                                            │
+│                                    ├─ Route to correct tracker (venue-based)    │
+│                                    ├─ Calculate delta_bps over 5ms window       │
+│                                    ├─ |delta| > 5 bps AND other lagging?        │
+│                                    └─ If yes → ImpulseSignal (MEDIUM)           │
+│                                                                                 │
+│  Book A ──▶ process_book() ──▶ ObiDivergenceDetector.process_book()             │
+│                                    │                                            │
+│                                    ├─ Calculate OBI = (bid_vol - ask_vol) / total│
+│                                    ├─ One exchange strong (>0.7), other neutral? │
+│                                    └─ If yes → ObiSignal (MEDIUM)               │
+│                                                                                 │
+│  ImpulseObiEngine combines:                                                     │
+│  ├─ Pending impulse + incoming OBI (same venue+side) → HIGH conviction          │
+│  ├─ Pending OBI + incoming impulse (same venue+side) → HIGH conviction          │
+│  ├─ Impulse only → MEDIUM conviction                                            │
+│  ├─ OBI only → MEDIUM conviction                                                │
+│  └─ Timeout clears pending signals                                              │
+│                                                                                 │
+│  HIGH conviction signals are prioritized for execution.                         │
 │                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -213,10 +175,8 @@
 │           │    (FLIP!)      │                    │    (FLIP!)      │            │
 │           └─────────────────┘                    └─────────────────┘            │
 │                                                                                 │
-│  ─────────────────────────────────────────────────────────────────────────────  │
-│                                                                                 │
-│  KEY CHANGE: No magnitude threshold check. Flip based on consistent leader      │
-│  change (streak) only. Correlation quality filtered by min_correlation_r.       │
+│  KEY: Flip based on consistent leader change (streak) only.                     │
+│  Correlation quality filtered by min_correlation_r.                             │
 │                                                                                 │
 │  STREAK RESET CONDITIONS:                                                       │
 │  ┌─────────────────────────────────────────────────────────────────────────┐   │
@@ -273,11 +233,24 @@
 │  │ 0x0010 │ candidate_lead  │ 1 byte  │ Candidate LeadRole                 │   │
 │  │ 0x0018 │ candidate_r     │ 8 bytes │ Candidate correlation              │   │
 │  │ 0x0020 │ candidate_streak│ 4 bytes │ Consecutive dominance count        │   │
-│  │ 0x0028 │ threshold_margin│ 8 bytes │ Min R difference for flip          │   │
+│  │ 0x0028 │ threshold_margin│ 8 bytes │ Stored but unused (streak-based)   │   │
 │  │ 0x0030 │ min_consecutive │ 4 bytes │ Required streak length             │   │
 │  └─────────────────────────────────────────────────────────────────────────┘   │
 │                                                                                 │
-│  TOTAL HOT PATH MEMORY: ~6360 bytes (99 cache lines)                           │
+│  IngestResult (5200 bytes, stack-allocated)                                     │
+│  ┌─────────────────────────────────────────────────────────────────────────┐   │
+│  │ pairs: [AlignedPair; 64]   (5120 bytes)    │ Fixed-size array           │   │
+│  │ count: usize               (8 bytes)        │ Valid pair count           │   │
+│  └─────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                 │
+│  PendingSignal (17 bytes, Copy-friendly, no heap allocation)                    │
+│  ┌─────────────────────────────────────────────────────────────────────────┐   │
+│  │ venue: VenueId        (1 byte)     │ Target venue                       │   │
+│  │ side: OrderSide       (1 byte)     │ Buy or Sell                        │   │
+│  │ timestamp_ns: u64     (8 bytes)    │ Signal timestamp                   │   │
+│  └─────────────────────────────────────────────────────────────────────────┘   │
+│                                                                                 │
+│  TOTAL HOT PATH MEMORY: ~11.5KB (180 cache lines)                              │
 │                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -295,48 +268,34 @@
 │  │  ┌───────────────┐       ┌───────────────┐                              │   │
 │  │  │ WS Task A     │       │ WS Task B     │                              │   │
 │  │  │ (Binance)     │       │ (Hyperliquid) │                              │   │
-│  │  └───────┬───────┘       └───────┬───────┘                              │   │
+│  │  └───────┬───┬───┘       └───────┬───┬───┘                              │   │
+│  │          │   │                   │   │                                  │   │
+│  │          │   │ Arc<BookUpdate>   │   │ Arc<BookUpdate>                  │   │
+│  │          │   │ try_send          │   │ try_send                         │   │
+│  │          │   ▼                   │   ▼                                  │   │
+│  │          │ Book Channel A        │ Book Channel B                       │   │
 │  │          │                       │                                      │   │
 │  │          │ Arc<Tick>             │ Arc<Tick>                            │   │
 │  │          │ try_send              │ try_send                             │   │
 │  │          ▼                       ▼                                      │   │
 │  │  ┌─────────────────────────────────────────────────────────────────┐   │   │
 │  │  │              crossbeam::bounded(1024)                           │   │   │
-│  │  │              Channel A              Channel B                   │   │   │
+│  │  │              Tick A     Tick B     Book A     Book B             │   │   │
 │  │  └─────────────────────────────────────────────────────────────────┘   │   │
 │  └─────────────────────────────────────────────────────────────────────────┘   │
-│                    │                              │                             │
-│                    │ try_recv                     │ try_recv                    │
-│                    ▼                              ▼                             │
+│                    │           │           │           │                        │
+│                    │ try_recv  │ try_recv  │ try_recv  │ try_recv               │
+│                    ▼           ▼           ▼           ▼                        │
 │  ┌─────────────────────────────────────────────────────────────────────────┐   │
-│  │                    SYNC CONSUMER (Dedicated OS Thread)                  │   │
+│  │                    MAIN LOOP (Async Tokio Task)                         │   │
 │  │                                                                         │   │
-│  │  loop {                                                                 │   │
-│  │      match rx.try_recv() {                                              │   │
-│  │          Ok(tick) => process(tick),                                     │   │
-│  │          Err(Empty) => std::hint::spin_loop(),  // No sleep!            │   │
-│  │          Err(Disconnected) => break,                                    │   │
-│  │      }                                                                  │   │
-│  │  }                                                                      │   │
-│  └─────────────────────────────────────────────────────────────────────────┘   │
-│                    │                                                           │
-│                    │ TradeSignal                                               │
-│                    │ try_send                                                  │
-│                    ▼                                                           │
-│  ┌─────────────────────────────────────────────────────────────────────────┐   │
-│  │              crossbeam::bounded(256)                                    │   │
-│  │              Signal Channel                                             │   │
-│  └─────────────────────────────────────────────────────────────────────────┘   │
-│                    │                                                           │
-│                    │ recv.await                                                │
-│                    ▼                                                           │
-│  ┌─────────────────────────────────────────────────────────────────────────┐   │
-│  │                    ASYNC CONSUMER (Tokio Task)                          │   │
+│  │  Strategy routing:                                                      │   │
+│  │  ├─ Correlation-Hysteresis: tick → timegrid → process_pair()           │   │
+│  │  ├─ Impulse-OBI: tick → process_tick()                                │   │
+│  │  └─ Impulse-OBI: book → process_book()                                │   │
 │  │                                                                         │   │
-│  │  OMS::process_signal()                                                  │   │
-│  │  ├── Preflight checks                                                   │   │
-│  │  ├── Create order                                                       │   │
-│  │  └── Submit to execution engine                                         │   │
+│  │  signal → oms.process_signal() → PaperSimulator.submit_order()        │   │
+│  │                                                                         │   │
 │  └─────────────────────────────────────────────────────────────────────────┘   │
 │                                                                                 │
 │  BACKPRESSURE STRATEGY:                                                         │
@@ -345,6 +304,7 @@
 │  │ • If channel full → drop tick, log warning                              │   │
 │  │ • If signal channel full → drop signal (stale anyway)                   │   │
 │  │ • Bounded channels prevent memory bloat                                 │   │
+│  │ • Book subscriptions optional — graceful fallback if unavailable        │   │
 │  └─────────────────────────────────────────────────────────────────────────┘   │
 │                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
@@ -376,14 +336,14 @@
 │             ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                  │
 │             │   signal    │  │    oms      │  │    sim      │                  │
 │             │ (Hot Path)  │  │  (Risk)     │  │ (Paper)     │                  │
-│             └──────┬──────┘  └──────┬──────┘  └─────────────┘                  │
-│                    │                │                                           │
-│                    │                ▼                                           │
-│                    │         ┌─────────────┐                                    │
-│                    │         │   persist   │                                    │
-│                    │         │ (Telemetry) │                                    │
-│                    │         └─────────────┘                                    │
-│                    │                                                            │
+│             └──────┬──────┘  └──────┬──────┘  └──────┬──────┘                  │
+│                    │                │                │                          │
+│                    │                ▼                │                          │
+│                    │         ┌─────────────┐         │                          │
+│                    │         │   persist   │         │                          │
+│                    │         │ (Telemetry) │         │                          │
+│                    │         └─────────────┘         │                          │
+│                    │                                  │                          │
 │  ─────────────────────────────────────────────────────────────────────────────  │
 │                                                                                 │
 │  DEPENDENCY RULES:                                                              │
@@ -392,7 +352,7 @@
 │  │ • eal: Depends on config only                                           │   │
 │  │ • signal: Depends on eal::types only (no async)                         │   │
 │  │ • oms: Depends on eal, config                                           │   │
-│  │ • sim: Depends on eal                                                   │   │
+│  │ • sim: Depends on eal, config                                           │   │
 │  │ • persist: Depends on eal::types                                        │   │
 │  │ • logging: No dependencies                                              │   │
 │  │ • main: Depends on all modules                                          │   │
@@ -408,6 +368,8 @@
 │                            LATENCY BUDGET (<10µs target)                        │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
+│  CORRELATION-HYSTERESIS PATH:                                                   │
+│  ─────────────────────────────                                                  │
 │  Component                    │ Cycles @3GHz │ Time      │ % of Budget         │
 │  ─────────────────────────────┼──────────────┼───────────┼──────────────────── │
 │  1. Tick ingestion            │ ~50          │ ~17ns     │ 0.2%                │
@@ -419,9 +381,30 @@
 │  7. Hysteresis update         │ ~30          │ ~10ns     │ 0.1%                │
 │  8. Signal generation         │ ~50          │ ~17ns     │ 0.2%                │
 │  ─────────────────────────────┼──────────────┼───────────┼──────────────────── │
-│  TOTAL HOT PATH               │ ~2500        │ ~834ns    │ 8.3%                │
+│  TOTAL                        │ ~2500        │ ~834ns    │ 8.3%                │
 │                                                                                 │
-│  HEADROOM: 91.7% (9.166µs available for OMS, network, etc.)                    │
+│  IMPULSE-OBI PATH:                                                              │
+│  ─────────────────                                                              │
+│  Component                    │ Cycles @3GHz │ Time      │ % of Budget         │
+│  ─────────────────────────────┼──────────────┼───────────┼──────────────────── │
+│  1. Tick ingestion            │ ~50          │ ~17ns     │ 0.2%                │
+│  2. MidpriceTracker update    │ ~30          │ ~10ns     │ 0.1%                │
+│  3. Delta bps calculation     │ ~20          │ ~7ns      │ 0.1%                │
+│  4. Threshold comparison      │ ~10          │ ~3ns      │ 0.03%               │
+│  5. PendingSignal store       │ ~5           │ ~2ns      │ 0.02%               │
+│  ─────────────────────────────┼──────────────┼───────────┼──────────────────── │
+│  TOTAL (impulse only)         │ ~115         │ ~39ns     │ 0.4%                │
+│                                                                                 │
+│  Component                    │ Cycles @3GHz │ Time      │ % of Budget         │
+│  ─────────────────────────────┼──────────────┼───────────┼──────────────────── │
+│  1. Book ingestion            │ ~50          │ ~17ns     │ 0.2%                │
+│  2. OBI calculation           │ ~100         │ ~33ns     │ 0.3%                │
+│  3. Divergence check          │ ~30          │ ~10ns     │ 0.1%                │
+│  4. PendingSignal store       │ ~5           │ ~2ns      │ 0.02%               │
+│  ─────────────────────────────┼──────────────┼───────────┼──────────────────── │
+│  TOTAL (OBI only)             │ ~185         │ ~62ns     │ 0.6%                │
+│                                                                                 │
+│  HEADROOM: 91.4% (9.1µs available for OMS, network, etc.)                      │
 │                                                                                 │
 │  ─────────────────────────────────────────────────────────────────────────────  │
 │                                                                                 │
@@ -435,3 +418,4 @@
 │  └─────────────────────────────────────────────────────────────────────────┘   │
 │                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
+```

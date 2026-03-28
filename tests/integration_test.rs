@@ -5,7 +5,7 @@
 
 use tokioparasite::config::{RiskSettings, StrategySettings};
 use tokioparasite::eal::{
-    FillEvent, MockExchange, OrderExecution, OrderRequest, OrderSide, Symbol, Tick, VenueId,
+    FillEvent, MockExchange, OrderSide, Symbol, Tick, VenueId,
 };
 use tokioparasite::oms::OrderManagementSystem;
 use tokioparasite::signal::{SignalPipeline, TimeGrid};
@@ -25,12 +25,23 @@ fn make_tick(venue: VenueId, symbol: &str, price: f64, ts_ns: u64) -> Tick {
 /// Helper function to create strategy settings.
 fn make_strategy_settings() -> StrategySettings {
     StrategySettings {
+        active_strategy: "correlation_hysteresis".to_string(),
         symbols: vec!["BTC".to_string()],
         window_size_ticks: 256,
         min_correlation_r: 0.85,
         hysteresis_buffer: 0.10,
         enable_obi: false,
         obi_weight: 0.0,
+        impulse_threshold_bps: 5,
+        lag_threshold_bps: 1,
+        impulse_window_ms: 5,
+        signal_timeout_ms: 10,
+        min_trade_size_filter: 0.001,
+        spread_filter_bps: 10,
+        obi_strong_threshold: 0.7,
+        obi_neutral_threshold: 0.2,
+        obi_depth: 5,
+        obi_spike_threshold: 0.3,
     }
 }
 
@@ -49,12 +60,23 @@ fn make_risk_settings() -> RiskSettings {
 async fn test_tick_to_signal_to_order_flow() {
     // Create components with lower hysteresis threshold for easier testing
     let strategy_settings = StrategySettings {
+        active_strategy: "correlation_hysteresis".to_string(),
         symbols: vec!["BTC".to_string()],
         window_size_ticks: 256,
         min_correlation_r: 0.85,
         hysteresis_buffer: 0.05, // Lower threshold for easier flip
         enable_obi: false,
         obi_weight: 0.0,
+        impulse_threshold_bps: 5,
+        lag_threshold_bps: 1,
+        impulse_window_ms: 5,
+        signal_timeout_ms: 10,
+        min_trade_size_filter: 0.001,
+        spread_filter_bps: 10,
+        obi_strong_threshold: 0.7,
+        obi_neutral_threshold: 0.2,
+        obi_depth: 5,
+        obi_spike_threshold: 0.3,
     };
     let risk_settings = RiskSettings {
         max_notional_usd: 5000.0,
@@ -160,12 +182,23 @@ async fn test_tick_to_signal_to_order_flow() {
 async fn test_risk_check_rejection() {
     // Create components with very low correlation threshold
     let strategy_settings = StrategySettings {
+        active_strategy: "correlation_hysteresis".to_string(),
         symbols: vec!["BTC".to_string()],
         window_size_ticks: 256,
         min_correlation_r: 0.99, // Very high threshold
         hysteresis_buffer: 0.10,
         enable_obi: false,
         obi_weight: 0.0,
+        impulse_threshold_bps: 5,
+        lag_threshold_bps: 1,
+        impulse_window_ms: 5,
+        signal_timeout_ms: 10,
+        min_trade_size_filter: 0.001,
+        spread_filter_bps: 10,
+        obi_strong_threshold: 0.7,
+        obi_neutral_threshold: 0.2,
+        obi_depth: 5,
+        obi_spike_threshold: 0.3,
     };
 
     let risk_settings = make_risk_settings();

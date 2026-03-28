@@ -14,6 +14,7 @@ mod logging;
 mod oms;
 mod persist;
 mod signal;
+mod sim;
 
 use config::Settings;
 use eal::{BinanceExchange, HyperliquidExchange, MarketData, MockExchange, VenueId};
@@ -21,10 +22,10 @@ use logging::init_logging;
 use oms::OrderManagementSystem;
 use persist::{StateStore, TelemetryWriter};
 use signal::{SignalPipeline, TimeGrid};
-use std::collections::HashMap;
+use sim::PaperSimulator;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -34,6 +35,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Starting TokioParasite Lead-Lag Bot");
     info!("Log level: {}", settings.app.log_level);
+    info!("Active strategy: {}", settings.strategy.active_strategy);
     info!("Paper trading: {}", settings.simulation.enabled);
     info!("CPU pinning: {}", settings.app.cpu_pinning);
 
@@ -60,7 +62,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Initialize signal pipeline
     let mut pipeline = SignalPipeline::<256>::new(settings.strategy.clone());
-    info!("Signal pipeline initialized with {} symbols", settings.strategy.symbols.len());
+    pipeline.set_precision(settings.app.tick_precision_ns);
+    info!(
+        "Signal pipeline initialized with {} symbols",
+        settings.strategy.symbols.len()
+    );
 
     // Initialize exchanges based on configuration
     let (exchange_a, exchange_b): (Box<dyn MarketData>, Box<dyn MarketData>) =
@@ -88,14 +94,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let tick_rx_a = exchange_a.subscribe_ticks(&symbols).await?;
     let tick_rx_b = exchange_b.subscribe_ticks(&symbols).await?;
-    info!("Subscribed to market data for {} symbols", symbols.len());
+    info!("Subscribed to ticks for {} symbols", symbols.len());
+
+    // Subscribe to order book data for OBI-based strategies
+    let use_obi = settings.strategy.active_strategy == "impulse_obi";
+    let (book_rx_a, book_rx_b) = if use_obi {
+        info!("OBI strategy active — subscribing to order book data");
+        // Try to subscribe per-symbol; fall back gracefully if not implemented
+        let mut book_a = None;
+        let mut book_b = None;
+        for sym in &symbols {
+            match exchange_a.subscribe_book(sym).await {
+                Ok(rx) => {
+                    info!("Book subscription successful for {:?} {}", VenueId::EXCHANGE_A, sym);
+                    book_a = Some(rx);
+                }
+                Err(e) => {
+                    warn!(
+                        "Book subscription not available for {:?} {}: {} (OBI signals will be limited)",
+                        VenueId::EXCHANGE_A, sym, e
+                    );
+                }
+            }
+            match exchange_b.subscribe_book(sym).await {
+                Ok(rx) => {
+                    info!("Book subscription successful for {:?} {}", VenueId::EXCHANGE_B, sym);
+                    book_b = Some(rx);
+                }
+                Err(e) => {
+                    warn!(
+                        "Book subscription not available for {:?} {}: {} (OBI signals will be limited)",
+                        VenueId::EXCHANGE_B, sym, e
+                    );
+                }
+            }
+        }
+        (book_a, book_b)
+    } else {
+        (None, None)
+    };
 
     // Initialize time grid for tick alignment
     let mut timegrid = TimeGrid::new(settings.app.tick_precision_ns);
-    info!("Time grid initialized with {}ns precision", settings.app.tick_precision_ns);
+    info!(
+        "Time grid initialized with {}ns precision",
+        settings.app.tick_precision_ns
+    );
 
-    // Initialize paper simulator for order execution
-    let simulator = eal::MockExchange::new(VenueId::EXCHANGE_A);
+    // Initialize paper simulator for order execution (Issue 3 fix)
+    let simulator = PaperSimulator::new(settings.simulation.clone());
 
     // Main event loop
     info!("Entering main event loop...");
@@ -120,8 +167,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Process through time grid (zero-cost, no heap allocation)
             let ingest_result = timegrid.ingest_tick(&tick);
+
+            // Process through signal pipeline — route based on strategy
             for pair in ingest_result.iter() {
-                // Process each aligned pair through signal pipeline
                 if let Some(signal) = pipeline.process_pair(&tick.symbol, pair) {
                     signal_count += 1;
                     info!(
@@ -129,7 +177,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         signal.side, signal.symbol, signal.correlation_r
                     );
 
-                    // Log signal to telemetry
                     telemetry.log_signal(
                         &signal.symbol.to_string(),
                         &signal.side.to_string(),
@@ -137,7 +184,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         signal.lag_offset_ns,
                     );
 
-                    // Process signal through OMS
                     match oms.process_signal(&signal, pair.price_a, &simulator).await {
                         Ok(ack) => {
                             info!("Order submitted: {}", ack.order_id);
@@ -145,6 +191,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         Err(e) => {
                             warn!("Order rejected: {}", e);
                         }
+                    }
+                }
+            }
+
+            // Impulse-OBI: process tick directly for impulse detection (Issue 1 fix)
+            if let Some(signal) = pipeline.process_tick(&tick) {
+                signal_count += 1;
+                info!(
+                    "Impulse signal: {} {} (r={:.3})",
+                    signal.side, signal.symbol, signal.correlation_r
+                );
+
+                telemetry.log_signal(
+                    &signal.symbol.to_string(),
+                    &signal.side.to_string(),
+                    signal.correlation_r,
+                    signal.lag_offset_ns,
+                );
+
+                match oms.process_signal(&signal, tick.price, &simulator).await {
+                    Ok(ack) => {
+                        info!("Order submitted: {}", ack.order_id);
+                    }
+                    Err(e) => {
+                        warn!("Order rejected: {}", e);
                     }
                 }
             }
@@ -162,10 +233,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tick_count += 1;
             telemetry.log_tick(&tick);
 
-            // Process through time grid (zero-cost, no heap allocation)
             let ingest_result = timegrid.ingest_tick(&tick);
+
             for pair in ingest_result.iter() {
-                // Process each aligned pair through signal pipeline
                 if let Some(signal) = pipeline.process_pair(&tick.symbol, pair) {
                     signal_count += 1;
                     info!(
@@ -173,7 +243,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         signal.side, signal.symbol, signal.correlation_r
                     );
 
-                    // Log signal to telemetry
                     telemetry.log_signal(
                         &signal.symbol.to_string(),
                         &signal.side.to_string(),
@@ -181,8 +250,62 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         signal.lag_offset_ns,
                     );
 
-                    // Process signal through OMS
                     match oms.process_signal(&signal, pair.price_b, &simulator).await {
+                        Ok(ack) => {
+                            info!("Order submitted: {}", ack.order_id);
+                        }
+                        Err(e) => {
+                            warn!("Order rejected: {}", e);
+                        }
+                    }
+                }
+            }
+
+            // Impulse-OBI: process tick directly (Issue 1 fix)
+            if let Some(signal) = pipeline.process_tick(&tick) {
+                signal_count += 1;
+                info!(
+                    "Impulse signal: {} {} (r={:.3})",
+                    signal.side, signal.symbol, signal.correlation_r
+                );
+
+                telemetry.log_signal(
+                    &signal.symbol.to_string(),
+                    &signal.side.to_string(),
+                    signal.correlation_r,
+                    signal.lag_offset_ns,
+                );
+
+                match oms.process_signal(&signal, tick.price, &simulator).await {
+                    Ok(ack) => {
+                        info!("Order submitted: {}", ack.order_id);
+                    }
+                    Err(e) => {
+                        warn!("Order rejected: {}", e);
+                    }
+                }
+            }
+        }
+
+        // Process book updates from exchange A (Issue 2 fix)
+        if let Some(ref book_rx) = book_rx_a {
+            if let Ok(book) = book_rx.try_recv() {
+                if let Some(signal) = pipeline.process_book(&book) {
+                    signal_count += 1;
+                    info!(
+                        "OBI signal: {} {} (r={:.3})",
+                        signal.side, signal.symbol, signal.correlation_r
+                    );
+
+                    telemetry.log_signal(
+                        &signal.symbol.to_string(),
+                        &signal.side.to_string(),
+                        signal.correlation_r,
+                        signal.lag_offset_ns,
+                    );
+
+                    let price = book.best_bid().unwrap_or(0.0);
+                    match oms.process_signal(&signal, price, &simulator).await {
                         Ok(ack) => {
                             info!("Order submitted: {}", ack.order_id);
                         }
@@ -194,8 +317,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        // Small sleep to prevent busy-waiting
-        tokio::time::sleep(std::time::Duration::from_micros(100)).await;
+        // Process book updates from exchange B (Issue 2 fix)
+        if let Some(ref book_rx) = book_rx_b {
+            if let Ok(book) = book_rx.try_recv() {
+                if let Some(signal) = pipeline.process_book(&book) {
+                    signal_count += 1;
+                    info!(
+                        "OBI signal: {} {} (r={:.3})",
+                        signal.side, signal.symbol, signal.correlation_r
+                    );
+
+                    telemetry.log_signal(
+                        &signal.symbol.to_string(),
+                        &signal.side.to_string(),
+                        signal.correlation_r,
+                        signal.lag_offset_ns,
+                    );
+
+                    let price = book.best_bid().unwrap_or(0.0);
+                    match oms.process_signal(&signal, price, &simulator).await {
+                        Ok(ack) => {
+                            info!("Order submitted: {}", ack.order_id);
+                        }
+                        Err(e) => {
+                            warn!("Order rejected: {}", e);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Yield to scheduler — avoid blocking the async runtime.
+        // On a dedicated hot-path OS thread, this would be std::hint::spin_loop().
+        // (Issue 11: replaced sleep with yield_now for lower latency)
+        tokio::task::yield_now().await;
     }
 
     // Shutdown

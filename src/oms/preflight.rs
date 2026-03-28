@@ -3,9 +3,9 @@
 //! All checks are performed before order submission to prevent
 //! risk violations. These checks are non-bypassable.
 
+use super::NetDelta;
 use crate::config::{RiskSettings, StrategySettings};
 use crate::eal::{RiskError, TradeSignal, VenueId};
-use super::NetDelta;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Pre-flight checker for risk management.
@@ -100,7 +100,14 @@ impl PreflightChecker {
     }
 
     /// Check if correlation is above minimum threshold.
+    ///
+    /// Only enforced for correlation-hysteresis strategy.
+    /// Impulse-OBI uses its own conviction scoring (HIGH/MEDIUM) and
+    /// does not depend on Pearson correlation.
     fn check_correlation(&self, signal: &TradeSignal) -> Result<(), RiskError> {
+        if self.strategy_settings.active_strategy == "impulse_obi" {
+            return Ok(());
+        }
         if signal.correlation_r < self.strategy_settings.min_correlation_r {
             return Err(RiskError::CorrelationTooLow {
                 r: signal.correlation_r,
@@ -158,7 +165,8 @@ impl PreflightChecker {
         // and size_impact = 0.001 bps per $1000 notional (for BTC)
         let base_slippage_bps = 1.0;
         let size_impact_bps_per_1000 = 0.001;
-        let estimated_slippage_bps = base_slippage_bps + (size_impact_bps_per_1000 * (notional / 1000.0));
+        let estimated_slippage_bps =
+            base_slippage_bps + (size_impact_bps_per_1000 * (notional / 1000.0));
 
         // Cap at reasonable maximum (e.g., 50 bps for very large orders)
         let estimated_slippage_bps = estimated_slippage_bps.min(50.0);
@@ -272,6 +280,44 @@ mod tests {
 
         let result = checker.check_signal(&signal, 60000.0, &net_delta);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_correlation_skipped_for_impulse_obi() {
+        let risk_settings = RiskSettings {
+            max_notional_usd: 5000.0,
+            max_drawdown_daily: 200.0,
+            max_slippage_bps: 8,
+            signal_ttl_ms: 150,
+            self_trade_prevention: true,
+        };
+
+        let strategy_settings = crate::config::StrategySettings {
+            active_strategy: "impulse_obi".to_string(),
+            symbols: vec!["BTC".to_string()],
+            window_size_ticks: 256,
+            min_correlation_r: 0.85,
+            hysteresis_buffer: 0.10,
+            enable_obi: false,
+            obi_weight: 0.0,
+            impulse_threshold_bps: 5,
+            lag_threshold_bps: 1,
+            impulse_window_ms: 5,
+            signal_timeout_ms: 10,
+            min_trade_size_filter: 0.001,
+            spread_filter_bps: 10,
+            obi_strong_threshold: 0.7,
+            obi_neutral_threshold: 0.2,
+            obi_depth: 5,
+            obi_spike_threshold: 0.3,
+        };
+
+        let checker = PreflightChecker::new(risk_settings, strategy_settings);
+        let net_delta = NetDelta::new(200.0);
+        let signal = make_signal(VenueId::EXCHANGE_A, 0.0, 0); // r=0.0 — would fail correlation
+
+        let result = checker.check_signal(&signal, 60000.0, &net_delta);
+        assert!(result.is_ok(), "Impulse-OBI should skip correlation check");
     }
 
     #[test]

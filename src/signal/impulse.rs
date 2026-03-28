@@ -47,16 +47,24 @@ impl MidpriceTracker {
         let current_ns = tick.exchange_ts_ns;
         let price = tick.price;
 
+        // Guard against invalid prices
+        if !price.is_finite() || price <= 0.0 {
+            return None;
+        }
+
         // Update current mid
         self.current_mid = Some(price);
 
         // Check if window has elapsed
         if let Some(prev) = self.prev_mid {
-            if current_ns - self.prev_timestamp_ns >= self.window_ns {
+            if prev > 0.0
+                && prev.is_finite()
+                && current_ns - self.prev_timestamp_ns >= self.window_ns
+            {
                 let delta = (price - prev) / prev * 10000.0; // Convert to bps
                 self.prev_mid = Some(price);
                 self.prev_timestamp_ns = current_ns;
-                return Some(delta);
+                return if delta.is_finite() { Some(delta) } else { None };
             }
         } else {
             // First tick, initialize prev
@@ -71,6 +79,21 @@ impl MidpriceTracker {
     #[inline(always)]
     fn current_mid(&self) -> Option<f64> {
         self.current_mid
+    }
+
+    /// Get the most recent delta in bps (without consuming the window).
+    ///
+    /// Returns None if insufficient data or prev price is zero/invalid.
+    #[inline(always)]
+    fn current_delta(&self) -> Option<f64> {
+        match (self.current_mid, self.prev_mid) {
+            (Some(current), Some(prev))
+                if prev > 0.0 && prev.is_finite() && current.is_finite() =>
+            {
+                Some((current - prev) / prev * 10000.0)
+            }
+            _ => None,
+        }
     }
 }
 
@@ -153,60 +176,64 @@ impl ImpulseDetector {
         let symbol = tick.symbol.clone();
         let timestamp_ns = tick.exchange_ts_ns;
 
-        // Update trackers and get deltas
-        let delta_a = self.tracker_a.update(tick);
-        let delta_b = self.tracker_b.update(tick);
+        // Route tick to the correct tracker only (Issue 5 fix)
+        let delta = match venue {
+            VenueId::EXCHANGE_A => self.tracker_a.update(tick),
+            VenueId::EXCHANGE_B => self.tracker_b.update(tick),
+            _ => return None, // Unknown venue — reject
+        };
 
-        // Check for impulse on exchange A
-        if venue == VenueId::EXCHANGE_A {
-            if let Some(delta) = delta_a {
-                if delta.abs() > self.impulse_threshold_bps {
-                    // Check if B is lagging
-                    if let Some(delta_b) = delta_b {
-                        if delta_b.abs() < self.lag_threshold_bps {
-                            // Impulse detected!
-                            self.last_impulse_ns = Some(timestamp_ns);
-                            let side = if delta > 0.0 {
-                                OrderSide::Buy
-                            } else {
-                                OrderSide::Sell
-                            };
-                            return Some(ImpulseSignal {
-                                side,
-                                target_venue: VenueId::EXCHANGE_B,
-                                symbol,
-                                impulse_magnitude_bps: delta,
-                                timestamp_ns,
-                            });
-                        }
-                    }
-                }
-            }
-        }
+        // Check for impulse: one exchange moves, other hasn't reacted
+        if let Some(delta_bps) = delta {
+            if delta_bps.is_finite() && delta_bps.abs() > self.impulse_threshold_bps {
+                // Get the other exchange's current delta for lag check
+                let other_delta = match venue {
+                    VenueId::EXCHANGE_A => self.tracker_b.current_delta(),
+                    VenueId::EXCHANGE_B => self.tracker_a.current_delta(),
+                    _ => return None,
+                };
 
-        // Check for impulse on exchange B
-        if venue == VenueId::EXCHANGE_B {
-            if let Some(delta) = delta_b {
-                if delta.abs() > self.impulse_threshold_bps {
-                    // Check if A is lagging
-                    if let Some(delta_a) = delta_a {
-                        if delta_a.abs() < self.lag_threshold_bps {
-                            // Impulse detected!
-                            self.last_impulse_ns = Some(timestamp_ns);
-                            let side = if delta > 0.0 {
-                                OrderSide::Buy
-                            } else {
-                                OrderSide::Sell
-                            };
-                            return Some(ImpulseSignal {
-                                side,
-                                target_venue: VenueId::EXCHANGE_A,
-                                symbol,
-                                impulse_magnitude_bps: delta,
-                                timestamp_ns,
-                            });
-                        }
-                    }
+                tracing::info!(
+                    "Impulse detected on {:?}: {} | delta={:.4} bps | threshold={:.1} bps",
+                    venue,
+                    symbol,
+                    delta_bps,
+                    self.impulse_threshold_bps
+                );
+
+                // Check if other exchange is lagging (flat or minimal move)
+                let other_is_lagging = match other_delta {
+                    Some(d) => d.is_finite() && d.abs() < self.lag_threshold_bps,
+                    None => true, // No data yet = lagging
+                };
+
+                if other_is_lagging {
+                    tracing::info!(
+                        "Laggard confirmed: {:?} is lagging for {}",
+                        match venue {
+                            VenueId::EXCHANGE_A => VenueId::EXCHANGE_B,
+                            _ => VenueId::EXCHANGE_A,
+                        },
+                        symbol
+                    );
+
+                    self.last_impulse_ns = Some(timestamp_ns);
+                    let side = if delta_bps > 0.0 {
+                        OrderSide::Buy
+                    } else {
+                        OrderSide::Sell
+                    };
+                    let target_venue = match venue {
+                        VenueId::EXCHANGE_A => VenueId::EXCHANGE_B,
+                        _ => VenueId::EXCHANGE_A,
+                    };
+                    return Some(ImpulseSignal {
+                        side,
+                        target_venue,
+                        symbol,
+                        impulse_magnitude_bps: delta_bps,
+                        timestamp_ns,
+                    });
                 }
             }
         }
@@ -277,10 +304,10 @@ mod tests {
     fn test_impulse_detector_basic() {
         let mut detector = ImpulseDetector::new(
             5_000_000,  // 5ms window
-            5.0,         // 5 bps impulse threshold
-            1.5,         // 1.5 bps lag threshold
-            0.001,       // min trade size
-            10_000_000,  // 10ms timeout
+            5.0,        // 5 bps impulse threshold
+            1.5,        // 1.5 bps lag threshold
+            0.001,      // min trade size
+            10_000_000, // 10ms timeout
         );
 
         // Initialize both trackers
@@ -300,10 +327,7 @@ mod tests {
     #[test]
     fn test_impulse_detector_filters_small_trades() {
         let mut detector = ImpulseDetector::new(
-            5_000_000,
-            5.0,
-            1.5,
-            0.001, // min trade size
+            5_000_000, 5.0, 1.5, 0.001, // min trade size
             10_000_000,
         );
 
@@ -315,11 +339,7 @@ mod tests {
     #[test]
     fn test_impulse_detector_timeout() {
         let detector = ImpulseDetector::new(
-            5_000_000,
-            5.0,
-            1.5,
-            0.001,
-            10_000_000, // 10ms timeout
+            5_000_000, 5.0, 1.5, 0.001, 10_000_000, // 10ms timeout
         );
 
         // No impulse yet

@@ -320,6 +320,9 @@ mod tests {
         let (best_lag, best_r) = corr.find_best_lag(-5, 5);
         assert!(best_r > 0.8, "Expected high correlation, got {best_r}");
         // The best lag should be close to 2 (B lagging A)
-        assert!(best_lag >= 1 && best_lag <= 3, "Expected lag around 2, got {best_lag}");
+        assert!(
+            best_lag >= 1 && best_lag <= 3,
+            "Expected lag around 2, got {best_lag}"
+        );
     }
 }

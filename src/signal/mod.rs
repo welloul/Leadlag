@@ -42,8 +42,6 @@ pub enum ActiveStrategy {
 pub struct SignalPipeline<const N: usize> {
     /// Active strategy
     active_strategy: ActiveStrategy,
-    /// Time-grid aligner.
-    timegrid: TimeGrid,
     /// Cross-correlator for each symbol (for correlation-hysteresis).
     correlators: std::collections::HashMap<Symbol, CrossCorrelator<N>>,
     /// Hysteresis state machine for each symbol (for correlation-hysteresis).
@@ -54,6 +52,8 @@ pub struct SignalPipeline<const N: usize> {
     settings: StrategySettings,
     /// Minimum correlation to generate a signal.
     min_r: f64,
+    /// Time grid precision in nanoseconds (passed from main.rs).
+    timegrid_precision_ns: u64,
 }
 
 impl<const N: usize> SignalPipeline<N> {
@@ -106,13 +106,18 @@ impl<const N: usize> SignalPipeline<N> {
 
         Self {
             active_strategy,
-            timegrid: TimeGrid::new(5_000_000), // 5ms grid
             correlators,
             hysteresis: hysteresis_map,
             impulse_obi_engine,
             settings,
             min_r,
+            timegrid_precision_ns: 5_000_000, // Default 5ms, overridden by set_precision()
         }
+    }
+
+    /// Set the time grid precision (called from main.rs with actual settings value).
+    pub fn set_precision(&mut self, precision_ns: u64) {
+        self.timegrid_precision_ns = precision_ns;
     }
 
     /// Process an aligned pair and generate a signal if conditions are met.
@@ -164,7 +169,11 @@ impl<const N: usize> SignalPipeline<N> {
     }
 
     /// Process using correlation-hysteresis strategy
-    fn process_correlation_hysteresis(&mut self, symbol: &Symbol, pair: &AlignedPair) -> Option<TradeSignal> {
+    fn process_correlation_hysteresis(
+        &mut self,
+        symbol: &Symbol,
+        pair: &AlignedPair,
+    ) -> Option<TradeSignal> {
         let correlator = self.correlators.get_mut(symbol)?;
         let hyst = self.hysteresis.get_mut(symbol)?;
 
@@ -223,7 +232,7 @@ impl<const N: usize> SignalPipeline<N> {
                     target_venue: laggard_venue,
                     symbol: symbol.clone(),
                     correlation_r: best_r,
-                    lag_offset_ns: best_lag as i64 * self.timegrid.precision_ns() as i64,
+                    lag_offset_ns: best_lag as i64 * self.timegrid_precision_ns as i64,
                     timestamp_ns: pair.timestamp_ns,
                 });
             }
@@ -234,12 +243,16 @@ impl<const N: usize> SignalPipeline<N> {
 
     /// Get the current lead role for a symbol.
     pub fn current_lead(&self, symbol: &Symbol) -> Option<LeadRole> {
-        self.hysteresis.get(symbol).map(|h: &Hysteresis| h.current_lead())
+        self.hysteresis
+            .get(symbol)
+            .map(|h: &Hysteresis| h.current_lead())
     }
 
     /// Get the current correlation for a symbol.
     pub fn current_correlation(&self, symbol: &Symbol) -> Option<f64> {
-        self.correlators.get(symbol).map(|c: &CrossCorrelator<N>| c.correlation())
+        self.correlators
+            .get(symbol)
+            .map(|c: &CrossCorrelator<N>| c.correlation())
     }
 
     /// Reset the pipeline for a symbol.
@@ -260,15 +273,6 @@ impl<const N: usize> SignalPipeline<N> {
         for h in self.hysteresis.values_mut() {
             h.clear();
         }
-        self.timegrid.clear();
-    }
-}
-
-// Add precision accessor to TimeGrid
-impl TimeGrid {
-    /// Get the grid precision in nanoseconds.
-    pub fn precision_ns(&self) -> u64 {
-        self.precision_ns
     }
 }
 

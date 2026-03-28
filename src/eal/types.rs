@@ -393,6 +393,9 @@ pub enum RiskError {
 
     #[error("Correlation too low: {r:.3} < {min:.3}")]
     CorrelationTooLow { r: f64, min: f64 },
+
+    #[error("Order execution failed: {0}")]
+    ExecutionFailed(String),
 }
 
 /// Execution errors.
@@ -430,8 +433,14 @@ mod tests {
         let book = BookUpdate {
             venue: VenueId::EXCHANGE_A,
             symbol: Symbol::new("BTC"),
-            bids: vec![BookLevel { price: 60000.0, size: 1.0 }],
-            asks: vec![BookLevel { price: 60001.0, size: 1.0 }],
+            bids: vec![BookLevel {
+                price: 60000.0,
+                size: 1.0,
+            }],
+            asks: vec![BookLevel {
+                price: 60001.0,
+                size: 1.0,
+            }],
             exchange_ts_ns: 0,
             local_ts_ns: 0,
         };
@@ -444,12 +453,24 @@ mod tests {
             venue: VenueId::EXCHANGE_A,
             symbol: Symbol::new("BTC"),
             bids: vec![
-                BookLevel { price: 60000.0, size: 10.0 },
-                BookLevel { price: 59999.0, size: 5.0 },
+                BookLevel {
+                    price: 60000.0,
+                    size: 10.0,
+                },
+                BookLevel {
+                    price: 59999.0,
+                    size: 5.0,
+                },
             ],
             asks: vec![
-                BookLevel { price: 60001.0, size: 2.0 },
-                BookLevel { price: 60002.0, size: 3.0 },
+                BookLevel {
+                    price: 60001.0,
+                    size: 2.0,
+                },
+                BookLevel {
+                    price: 60002.0,
+                    size: 3.0,
+                },
             ],
             exchange_ts_ns: 0,
             local_ts_ns: 0,
@@ -461,11 +482,7 @@ mod tests {
 
     #[test]
     fn test_order_request_notional() {
-        let order = OrderRequest::market_buy(
-            VenueId::EXCHANGE_A,
-            Symbol::new("BTC"),
-            0.5,
-        );
+        let order = OrderRequest::market_buy(VenueId::EXCHANGE_A, Symbol::new("BTC"), 0.5);
         assert_eq!(order.notional_usd(60000.0), 30000.0);
     }
 

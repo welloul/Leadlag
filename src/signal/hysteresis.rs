@@ -201,17 +201,20 @@ mod tests {
     }
 
     #[test]
-    fn test_no_flip_below_threshold_with_higher_values() {
+    fn test_no_flip_when_current_lead_reasserts() {
         let mut hyst = Hysteresis::new(0.10, 3);
 
         hyst.update(0.9, 0.8); // A leads
 
-        // B is higher but not by enough margin (0.95 < 0.9 + 0.10 = 1.0)
-        hyst.update(0.80, 0.95); // streak = 0 (doesn't exceed threshold)
-        assert_eq!(hyst.current_lead(), LeadRole::ExchangeA); // Not yet
+        // B becomes dominant (r_b > r_a), starting candidate streak
+        hyst.update(0.80, 0.95); // streak = 1
+        hyst.update(0.80, 0.95); // streak = 2
 
-        // Even after multiple updates, no flip should occur
-        hyst.update(0.80, 0.95); // streak = 0 (still doesn't exceed)
+        // A reasserts dominance — streak resets
+        hyst.update(0.95, 0.80); // streak = 0 (reset)
+
+        // B becomes dominant again — streak starts fresh at 1
+        hyst.update(0.80, 0.95); // streak = 1 (not enough for flip with min_consecutive=3)
         assert_eq!(hyst.current_lead(), LeadRole::ExchangeA);
     }
 

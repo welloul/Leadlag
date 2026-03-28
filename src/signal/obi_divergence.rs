@@ -85,6 +85,16 @@ impl ObiDivergenceDetector {
         // Calculate OBI
         let obi = book.obi(self.depth);
 
+        // Log OBI for debugging
+        tracing::debug!(
+            "OBI update: {} | venue={:?} | obi={:.4} | strong_threshold={:.2} | neutral_threshold={:.2}",
+            symbol,
+            venue,
+            obi,
+            self.strong_threshold,
+            self.neutral_threshold
+        );
+
         // Update current OBI values
         match venue {
             VenueId::EXCHANGE_A => {
@@ -100,7 +110,16 @@ impl ObiDivergenceDetector {
         // Check for liquidity shift (delta_obi > spike_threshold)
         let obi_delta = if venue == VenueId::EXCHANGE_A {
             if let (Some(prev), Some(current)) = (self.prev_obi_a, self.current_obi_a) {
-                Some(current - prev)
+                let delta = current - prev;
+                if delta.abs() > self.spike_threshold {
+                    tracing::info!(
+                        "Liquidity shift detected: {} | delta_obi={:.4} | spike_threshold={:.2}",
+                        symbol,
+                        delta,
+                        self.spike_threshold
+                    );
+                }
+                Some(delta)
             } else {
                 None
             }
@@ -110,8 +129,23 @@ impl ObiDivergenceDetector {
 
         // Check for divergence
         if let (Some(obi_a), Some(obi_b)) = (self.current_obi_a, self.current_obi_b) {
+            tracing::debug!(
+                "OBI divergence check: {} | obi_a={:.4} | obi_b={:.4} | strong={:.2} | neutral={:.2}",
+                symbol,
+                obi_a,
+                obi_b,
+                self.strong_threshold,
+                self.neutral_threshold
+            );
+
             // A strong, B neutral → BUY on B
             if obi_a > self.strong_threshold && obi_b.abs() < self.neutral_threshold {
+                tracing::info!(
+                    "OBI divergence detected: {} | A bullish (OBI={:.4}) | B neutral (OBI={:.4}) → BUY B",
+                    symbol,
+                    obi_a,
+                    obi_b
+                );
                 return Some(ObiSignal {
                     side: OrderSide::Buy,
                     target_venue: VenueId::EXCHANGE_B,
@@ -124,6 +158,12 @@ impl ObiDivergenceDetector {
 
             // A negative strong, B neutral → SELL on B
             if obi_a < -self.strong_threshold && obi_b.abs() < self.neutral_threshold {
+                tracing::info!(
+                    "OBI divergence detected: {} | A bearish (OBI={:.4}) | B neutral (OBI={:.4}) → SELL B",
+                    symbol,
+                    obi_a,
+                    obi_b
+                );
                 return Some(ObiSignal {
                     side: OrderSide::Sell,
                     target_venue: VenueId::EXCHANGE_B,
@@ -136,6 +176,12 @@ impl ObiDivergenceDetector {
 
             // B strong, A neutral → BUY on A
             if obi_b > self.strong_threshold && obi_a.abs() < self.neutral_threshold {
+                tracing::info!(
+                    "OBI divergence detected: {} | B bullish (OBI={:.4}) | A neutral (OBI={:.4}) → BUY A",
+                    symbol,
+                    obi_b,
+                    obi_a
+                );
                 return Some(ObiSignal {
                     side: OrderSide::Buy,
                     target_venue: VenueId::EXCHANGE_A,
@@ -148,6 +194,12 @@ impl ObiDivergenceDetector {
 
             // B negative strong, A neutral → SELL on A
             if obi_b < -self.strong_threshold && obi_a.abs() < self.neutral_threshold {
+                tracing::info!(
+                    "OBI divergence detected: {} | B bearish (OBI={:.4}) | A neutral (OBI={:.4}) → SELL A",
+                    symbol,
+                    obi_b,
+                    obi_a
+                );
                 return Some(ObiSignal {
                     side: OrderSide::Sell,
                     target_venue: VenueId::EXCHANGE_A,
@@ -194,8 +246,14 @@ mod tests {
         BookUpdate {
             venue,
             symbol: Symbol::new("BTC"),
-            bids: bids.into_iter().map(|(p, s)| BookLevel { price: p, size: s }).collect(),
-            asks: asks.into_iter().map(|(p, s)| BookLevel { price: p, size: s }).collect(),
+            bids: bids
+                .into_iter()
+                .map(|(p, s)| BookLevel { price: p, size: s })
+                .collect(),
+            asks: asks
+                .into_iter()
+                .map(|(p, s)| BookLevel { price: p, size: s })
+                .collect(),
             exchange_ts_ns: 0,
             local_ts_ns: 0,
         }
