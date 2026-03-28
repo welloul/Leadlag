@@ -215,9 +215,13 @@ impl PaperSimulator {
         // Each venue has its own independent order book.
         let key = (order.symbol.clone(), order.venue);
         let mut matchers = self.matchers.lock().unwrap();
-        let matcher = matchers
-            .entry(key)
-            .or_insert_with(|| OrderBookMatcher::new(self.settings.match_l2_depth));
+
+        // Use get_mut — do NOT silently create an empty matcher.
+        // If the venue has no book, return a clear error.
+        let matcher = matchers.get_mut(&key)
+            .ok_or_else(|| ExecutionError::ExchangeError(
+                format!("No book for {} on {:?}", order.symbol, order.venue)
+            ))?;
 
         // Match the order against this venue's book
         let (filled_size, avg_price, slippage_bps) = matcher.match_order(
@@ -225,10 +229,6 @@ impl PaperSimulator {
             order.size,
             order.price,
         )?;
-
-        if filled_size == 0.0 {
-            return Err(ExecutionError::ExchangeError("No liquidity".to_string()));
-        }
 
         // Calculate fee
         let notional = filled_size * avg_price;
