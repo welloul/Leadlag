@@ -209,12 +209,23 @@ mod tests {
         };
 
         let strategy_settings = crate::config::StrategySettings {
+            active_strategy: "correlation_hysteresis".to_string(),
             symbols: vec!["BTC".to_string()],
             window_size_ticks: 256,
             min_correlation_r: 0.85,
             hysteresis_buffer: 0.10,
             enable_obi: false,
             obi_weight: 0.0,
+            impulse_threshold_bps: 5,
+            lag_threshold_bps: 1,
+            impulse_window_ms: 5,
+            signal_timeout_ms: 10,
+            min_trade_size_filter: 0.001,
+            spread_filter_bps: 10,
+            obi_strong_threshold: 0.7,
+            obi_neutral_threshold: 0.2,
+            obi_depth: 5,
+            obi_spike_threshold: 0.3,
         };
 
         let checker = PreflightChecker::new(risk_settings, strategy_settings);
@@ -236,12 +247,23 @@ mod tests {
         };
 
         let strategy_settings = crate::config::StrategySettings {
+            active_strategy: "correlation_hysteresis".to_string(),
             symbols: vec!["BTC".to_string()],
             window_size_ticks: 256,
             min_correlation_r: 0.85,
             hysteresis_buffer: 0.10,
             enable_obi: false,
             obi_weight: 0.0,
+            impulse_threshold_bps: 5,
+            lag_threshold_bps: 1,
+            impulse_window_ms: 5,
+            signal_timeout_ms: 10,
+            min_trade_size_filter: 0.001,
+            spread_filter_bps: 10,
+            obi_strong_threshold: 0.7,
+            obi_neutral_threshold: 0.2,
+            obi_depth: 5,
+            obi_spike_threshold: 0.3,
         };
 
         let checker = PreflightChecker::new(risk_settings, strategy_settings);
@@ -263,12 +285,23 @@ mod tests {
         };
 
         let strategy_settings = crate::config::StrategySettings {
+            active_strategy: "correlation_hysteresis".to_string(),
             symbols: vec!["BTC".to_string()],
             window_size_ticks: 256,
             min_correlation_r: 0.85,
             hysteresis_buffer: 0.10,
             enable_obi: false,
             obi_weight: 0.0,
+            impulse_threshold_bps: 5,
+            lag_threshold_bps: 1,
+            impulse_window_ms: 5,
+            signal_timeout_ms: 10,
+            min_trade_size_filter: 0.001,
+            spread_filter_bps: 10,
+            obi_strong_threshold: 0.7,
+            obi_neutral_threshold: 0.2,
+            obi_depth: 5,
+            obi_spike_threshold: 0.3,
         };
 
         let checker = PreflightChecker::new(risk_settings, strategy_settings);

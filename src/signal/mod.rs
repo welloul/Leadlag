@@ -5,31 +5,51 @@
 //! - Incremental Pearson cross-correlation
 //! - Hysteresis state machine for role-flip validation
 //! - Order Book Imbalance (OBI) fusion
+//! - Impulse-OBI strategy (event-driven alpha)
 
 pub mod correlation;
 pub mod hysteresis;
+pub mod impulse;
+pub mod impulse_obi;
+pub mod obi_divergence;
 pub mod ring_buffer;
 pub mod timegrid;
 
 pub use correlation::CrossCorrelator;
 pub use hysteresis::{Hysteresis, LeadRole};
+pub use impulse::ImpulseDetector;
+pub use impulse_obi::{CombinedSignal, ImpulseObiEngine, SignalStrength};
+pub use obi_divergence::ObiDivergenceDetector;
 pub use ring_buffer::RingBuffer;
 pub use timegrid::{AlignedPair, IngestResult, TimeGrid};
 
 use crate::config::StrategySettings;
-use crate::eal::{OrderSide, Symbol, TradeSignal, VenueId};
+use crate::eal::{BookUpdate, OrderSide, Symbol, Tick, TradeSignal, VenueId};
+
+/// Active strategy enum
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ActiveStrategy {
+    /// Correlation-hysteresis (existing)
+    CorrelationHysteresis,
+    /// Impulse-OBI (new event-driven)
+    ImpulseObi,
+}
 
 /// Complete signal processing pipeline.
 ///
 /// Orchestrates time-grid alignment, cross-correlation, and hysteresis
-/// to generate trade signals.
+/// to generate trade signals. Supports multiple strategies.
 pub struct SignalPipeline<const N: usize> {
+    /// Active strategy
+    active_strategy: ActiveStrategy,
     /// Time-grid aligner.
     timegrid: TimeGrid,
-    /// Cross-correlator for each symbol.
+    /// Cross-correlator for each symbol (for correlation-hysteresis).
     correlators: std::collections::HashMap<Symbol, CrossCorrelator<N>>,
-    /// Hysteresis state machine for each symbol.
+    /// Hysteresis state machine for each symbol (for correlation-hysteresis).
     hysteresis: std::collections::HashMap<Symbol, Hysteresis>,
+    /// Impulse-OBI engine (for impulse-obi strategy).
+    impulse_obi_engine: Option<ImpulseObiEngine>,
     /// Strategy settings.
     settings: StrategySettings,
     /// Minimum correlation to generate a signal.
@@ -51,10 +71,45 @@ impl<const N: usize> SignalPipeline<N> {
             hysteresis_map.insert(symbol.clone(), hysteresis.clone());
         }
 
+        // Determine active strategy
+        let active_strategy = match settings.active_strategy.as_str() {
+            "impulse_obi" => ActiveStrategy::ImpulseObi,
+            _ => ActiveStrategy::CorrelationHysteresis,
+        };
+
+        // Initialize impulse-obi engine if needed
+        let impulse_obi_engine = if active_strategy == ActiveStrategy::ImpulseObi {
+            let window_ns = settings.impulse_window_ms * 1_000_000;
+            let signal_timeout_ns = settings.signal_timeout_ms * 1_000_000;
+            let impulse_detector = ImpulseDetector::new(
+                window_ns,
+                settings.impulse_threshold_bps as f64,
+                settings.lag_threshold_bps as f64,
+                settings.min_trade_size_filter,
+                signal_timeout_ns,
+            );
+            let obi_detector = ObiDivergenceDetector::new(
+                settings.obi_strong_threshold,
+                settings.obi_neutral_threshold,
+                settings.obi_depth,
+                settings.obi_spike_threshold,
+            );
+            Some(ImpulseObiEngine::new(
+                impulse_detector,
+                obi_detector,
+                settings.spread_filter_bps as f64,
+                signal_timeout_ns,
+            ))
+        } else {
+            None
+        };
+
         Self {
+            active_strategy,
             timegrid: TimeGrid::new(5_000_000), // 5ms grid
             correlators,
             hysteresis: hysteresis_map,
+            impulse_obi_engine,
             settings,
             min_r,
         }
@@ -62,6 +117,54 @@ impl<const N: usize> SignalPipeline<N> {
 
     /// Process an aligned pair and generate a signal if conditions are met.
     pub fn process_pair(&mut self, symbol: &Symbol, pair: &AlignedPair) -> Option<TradeSignal> {
+        // Route to active strategy
+        match self.active_strategy {
+            ActiveStrategy::CorrelationHysteresis => {
+                self.process_correlation_hysteresis(symbol, pair)
+            }
+            ActiveStrategy::ImpulseObi => {
+                // Impulse-OBI uses tick and book, not aligned pairs
+                None
+            }
+        }
+    }
+
+    /// Process tick for impulse-obi strategy
+    pub fn process_tick(&mut self, tick: &Tick) -> Option<TradeSignal> {
+        if let Some(engine) = &mut self.impulse_obi_engine {
+            if let Some(signal) = engine.process_tick(tick) {
+                return Some(TradeSignal {
+                    side: signal.side,
+                    target_venue: signal.target_venue,
+                    symbol: signal.symbol,
+                    correlation_r: 0.0, // Not applicable for impulse-obi
+                    lag_offset_ns: 0,
+                    timestamp_ns: signal.timestamp_ns,
+                });
+            }
+        }
+        None
+    }
+
+    /// Process book update for impulse-obi strategy
+    pub fn process_book(&mut self, book: &BookUpdate) -> Option<TradeSignal> {
+        if let Some(engine) = &mut self.impulse_obi_engine {
+            if let Some(signal) = engine.process_book(book) {
+                return Some(TradeSignal {
+                    side: signal.side,
+                    target_venue: signal.target_venue,
+                    symbol: signal.symbol,
+                    correlation_r: 0.0, // Not applicable for impulse-obi
+                    lag_offset_ns: 0,
+                    timestamp_ns: signal.timestamp_ns,
+                });
+            }
+        }
+        None
+    }
+
+    /// Process using correlation-hysteresis strategy
+    fn process_correlation_hysteresis(&mut self, symbol: &Symbol, pair: &AlignedPair) -> Option<TradeSignal> {
         let correlator = self.correlators.get_mut(symbol)?;
         let hyst = self.hysteresis.get_mut(symbol)?;
 
@@ -180,12 +283,23 @@ mod tests {
     #[test]
     fn test_signal_pipeline_creation() {
         let settings = StrategySettings {
+            active_strategy: "correlation_hysteresis".to_string(),
             symbols: vec!["BTC".to_string(), "ETH".to_string()],
             window_size_ticks: 256,
             min_correlation_r: 0.85,
             hysteresis_buffer: 0.10,
             enable_obi: false,
             obi_weight: 0.0,
+            impulse_threshold_bps: 5,
+            lag_threshold_bps: 1,
+            impulse_window_ms: 5,
+            signal_timeout_ms: 10,
+            min_trade_size_filter: 0.001,
+            spread_filter_bps: 10,
+            obi_strong_threshold: 0.7,
+            obi_neutral_threshold: 0.2,
+            obi_depth: 5,
+            obi_spike_threshold: 0.3,
         };
 
         let pipeline = SignalPipeline::<256>::new(settings);

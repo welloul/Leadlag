@@ -34,12 +34,31 @@ max_rtt_ms = 100
 # --- Strategy Parameters ---
 
 [strategy]
+# Strategy selection: "correlation_hysteresis" or "impulse_obi"
+active_strategy = "impulse_obi"
+
 symbols = ["ZEC", "XMR", "LINK"]
+
+# Correlation-Hysteresis settings (existing)
 window_size_ticks = 256     # Must be power of 2 for ring buffer optimization
 min_correlation_r = 0.85    # Threshold to trigger a signal
 hysteresis_buffer = 0.10    # Requirement to flip Lead/Lag roles
 enable_obi = true           # Order Book Imbalance fusion
 obi_weight = 0.3            # Weight of Book Imbalance vs Trade Delta
+
+# Impulse-OBI settings (new)
+impulse_threshold_bps = 5        # 3-10 bps price move to detect impulse
+lag_threshold_bps = 1.5          # 1-2 bps max move on other exchange
+impulse_window_ms = 5            # 5ms lookback for price change
+signal_timeout_ms = 10           # 5-10ms cancel timeout
+min_trade_size_filter = 0.001    # Filter fake impulses from small trades
+spread_filter_bps = 10           # Max spread to trade (avoid spread traps)
+
+# OBI divergence settings
+obi_strong_threshold = 0.7       # 0.6-0.8 strong imbalance
+obi_neutral_threshold = 0.2      # Neutral zone
+obi_depth = 5                    # 5-10 order book levels
+obi_spike_threshold = 0.3        # Liquidity shift detection
 
 # --- Risk Management (The "OMS" Layer) ---
 

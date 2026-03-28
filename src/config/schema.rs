@@ -132,9 +132,15 @@ pub struct VenueConfig {
 #[derive(Debug, Clone, Deserialize, Validate)]
 #[serde(deny_unknown_fields)]
 pub struct StrategySettings {
+    /// Active strategy: "correlation_hysteresis" or "impulse_obi"
+    #[validate(length(min = 1))]
+    pub active_strategy: String,
+
     /// Symbols to trade (e.g., ["BTC", "ETH", "SOL"])
     #[validate(length(min = 1))]
     pub symbols: Vec<String>,
+
+    // --- Correlation-Hysteresis settings ---
 
     /// Number of ticks in the sliding window (must be power of 2)
     #[validate(range(min = 16, max = 4096))]
@@ -154,6 +160,48 @@ pub struct StrategySettings {
     /// Weight of OBI vs Trade Delta (0.0 = only delta, 1.0 = only OBI)
     #[validate(range(min = 0.0, max = 1.0))]
     pub obi_weight: f64,
+
+    // --- Impulse-OBI settings ---
+
+    /// Price move threshold in bps to detect impulse (3-10 bps)
+    #[validate(range(min = 1, max = 100))]
+    pub impulse_threshold_bps: u64,
+
+    /// Max move on other exchange to consider it "lagging" (1-2 bps)
+    #[validate(range(min = 1, max = 50))]
+    pub lag_threshold_bps: u64,
+
+    /// Lookback window in ms for price change detection
+    #[validate(range(min = 1, max = 100))]
+    pub impulse_window_ms: u64,
+
+    /// Signal timeout in ms (cancel if not filled)
+    #[validate(range(min = 1, max = 1000))]
+    pub signal_timeout_ms: u64,
+
+    /// Minimum trade size to filter fake impulses
+    #[validate(range(min = 0.0, max = 1.0))]
+    pub min_trade_size_filter: f64,
+
+    /// Maximum spread in bps to allow trading
+    #[validate(range(min = 1, max = 1000))]
+    pub spread_filter_bps: u64,
+
+    /// OBI strong threshold (0.6-0.8)
+    #[validate(range(min = 0.5, max = 1.0))]
+    pub obi_strong_threshold: f64,
+
+    /// OBI neutral threshold
+    #[validate(range(min = 0.0, max = 0.5))]
+    pub obi_neutral_threshold: f64,
+
+    /// Order book depth for OBI calculation
+    #[validate(range(min = 1, max = 100))]
+    pub obi_depth: usize,
+
+    /// OBI spike threshold for liquidity shift detection
+    #[validate(range(min = 0.01, max = 1.0))]
+    pub obi_spike_threshold: f64,
 }
 
 // ============================================================================
