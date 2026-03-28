@@ -5,9 +5,10 @@
 | Aspect | Status |
 |--------|--------|
 | **Phase** | Paper Trading (v0.1.0) |
-| **Stability** | All 60+ tests passing (49 unit + 7 integration + 4 signal flow) |
+| **Stability** | All 58+ tests passing (49 unit + 7 integration + 2 signal flow) |
 | **Live Trading** | Disabled (simulation only) |
 | **API Keys** | Hyperliquid only (Binance pending) |
+| **Active Strategy** | Impulse-OBI (configurable via settings.toml) |
 
 ## Context for Next AI
 
@@ -93,9 +94,55 @@ RUST_LOG=tokioparasite=info cargo run --release
 
 ## Configuration Reference
 
+### Strategy Toggle
+
+The bot supports two strategies, selectable via `active_strategy` in settings.toml:
+
+| Strategy | Description | Best For |
+|----------|-------------|----------|
+| `correlation_hysteresis` | Statistical lead-lag detection | Slow, confirmed signals |
+| `impulse_obi` | Event-driven microstructure alpha | Fast, immediate signals |
+
+### Impulse-OBI Strategy
+
+**Datapoint 1: Trade Impulse**
+- Detects fast price moves on one exchange while other lags
+- Threshold: 5 bps impulse, 1.5 bps lag
+- Window: 5ms lookback
+- Action: Trade the laggard
+
+**Datapoint 2: OBI Divergence**
+- Detects order book imbalance divergence
+- Strong threshold: 0.7 (bid-heavy or ask-heavy)
+- Neutral threshold: 0.2
+- Action: Trade the neutral exchange
+
+**Combined Signal Priority:**
+- Impulse + OBI confirms → HIGH conviction
+- Impulse only → MEDIUM conviction
+- OBI only → MEDIUM conviction
+
 ### settings.toml Key Fields
 
 ```toml
+[strategy]
+active_strategy = "impulse_obi"  # or "correlation_hysteresis"
+symbols = ["ZEC", "XMR", "LINK"]
+
+# Impulse-OBI settings
+impulse_threshold_bps = 5
+lag_threshold_bps = 1.5
+impulse_window_ms = 5
+signal_timeout_ms = 10
+min_trade_size_filter = 0.001
+spread_filter_bps = 10
+
+# OBI settings
+obi_strong_threshold = 0.7
+obi_neutral_threshold = 0.2
+obi_depth = 5
+obi_spike_threshold = 0.3
+
 [app]
 cpu_pinning = true      # Set false for macOS development
 perf_mode = true        # Enables spin-loop (100% CPU)
