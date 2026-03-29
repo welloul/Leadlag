@@ -24,6 +24,11 @@ struct MidpriceTracker {
     prev_timestamp_ns: u64,
     /// Window size in nanoseconds
     window_ns: u64,
+    /// Whether the tracker has received at least one tick (prev_mid initialized).
+    initialized: bool,
+    /// Whether the tracker has completed one full window cycle (produced at least one delta).
+    /// The first delta produced after initialization is skipped (warmup).
+    warmed_up: bool,
 }
 
 impl MidpriceTracker {
@@ -35,6 +40,8 @@ impl MidpriceTracker {
             prev_mid: None,
             prev_timestamp_ns: 0,
             window_ns,
+            initialized: false,
+            warmed_up: false,
         }
     }
 
@@ -42,6 +49,9 @@ impl MidpriceTracker {
     ///
     /// Returns Some(delta_bps) if enough time has elapsed since last update.
     /// Delta is in basis points (1 bps = 0.01%).
+    ///
+    /// First tick initializes prev_mid, returns None.
+    /// Subsequent ticks only return a delta after window_ns has elapsed.
     #[inline(always)]
     fn update(&mut self, tick: &Tick) -> Option<f64> {
         let current_ns = tick.exchange_ts_ns;
@@ -59,17 +69,26 @@ impl MidpriceTracker {
         if let Some(prev) = self.prev_mid {
             if prev > 0.0
                 && prev.is_finite()
+                && current_ns >= self.prev_timestamp_ns
                 && current_ns - self.prev_timestamp_ns >= self.window_ns
             {
                 let delta = (price - prev) / prev * 10000.0; // Convert to bps
                 self.prev_mid = Some(price);
                 self.prev_timestamp_ns = current_ns;
+
+                // Skip the first delta (warmup) to avoid initial cross-venue price spike
+                if !self.warmed_up {
+                    self.warmed_up = true;
+                    return None;
+                }
+
                 return if delta.is_finite() { Some(delta) } else { None };
             }
         } else {
             // First tick, initialize prev
             self.prev_mid = Some(price);
             self.prev_timestamp_ns = current_ns;
+            self.initialized = true;
         }
 
         None
@@ -166,6 +185,7 @@ impl ImpulseDetector {
     /// 2. Other exchange hasn't reacted (< lag_threshold_bps)
     /// 3. Trade size >= min_trade_size
     /// 4. Signal hasn't timed out
+    /// 5. Both trackers have warmed up (at least 2 deltas each)
     pub fn process_tick(&mut self, tick: &Tick) -> Option<ImpulseSignal> {
         // Filter small trades
         if tick.size < self.min_trade_size {
@@ -183,9 +203,27 @@ impl ImpulseDetector {
             _ => return None, // Unknown venue — reject
         };
 
+        // Both trackers must have received at least one tick AND completed
+        // a warmup cycle before we generate impulses.
+        // - initialized: prevents firing when one venue has no data at all
+        // - warmed_up: prevents the first delta (initial cross-venue spike) from firing
+        if !self.tracker_a.initialized
+            || !self.tracker_b.initialized
+            || !self.tracker_a.warmed_up
+            || !self.tracker_b.warmed_up
+        {
+            return None;
+        }
+
         // Check for impulse: one exchange moves, other hasn't reacted
         if let Some(delta_bps) = delta {
-            if delta_bps.is_finite() && delta_bps.abs() > self.impulse_threshold_bps {
+            // Sanity check: reject unreasonably large deltas (> 500 bps = 5%).
+            // Real microstructure impulses are typically 5-50 bps.
+            // Deltas > 500 bps indicate stale initialization prices or data errors.
+            if delta_bps.is_finite()
+                && delta_bps.abs() > self.impulse_threshold_bps
+                && delta_bps.abs() < 500.0
+            {
                 // Get the other exchange's current delta for lag check
                 let other_delta = match venue {
                     VenueId::EXCHANGE_A => self.tracker_b.current_delta(),
@@ -201,10 +239,12 @@ impl ImpulseDetector {
                     self.impulse_threshold_bps
                 );
 
-                // Check if other exchange is lagging (flat or minimal move)
+                // Check if other exchange is lagging (flat or minimal move).
+                // None means the other tracker has data but hasn't completed a
+                // window cycle yet — treat as NOT lagging (conservative).
                 let other_is_lagging = match other_delta {
                     Some(d) => d.is_finite() && d.abs() < self.lag_threshold_bps,
-                    None => true, // No data yet = lagging
+                    None => false, // Other venue has data but no delta yet — don't assume lagging
                 };
 
                 if other_is_lagging {
@@ -287,17 +327,24 @@ mod tests {
         // First tick initializes prev
         let delta = tracker.update(&make_tick(VenueId::EXCHANGE_A, 100.0, 1.0, 0));
         assert!(delta.is_none());
+        assert!(tracker.initialized);
+        assert!(!tracker.warmed_up);
 
         // Second tick within window, no delta
         let delta = tracker.update(&make_tick(VenueId::EXCHANGE_A, 100.1, 1.0, 2_000_000));
         assert!(delta.is_none());
 
-        // Third tick after window, should return delta
+        // Third tick after window — first delta (warmup, skipped)
         let delta = tracker.update(&make_tick(VenueId::EXCHANGE_A, 100.5, 1.0, 6_000_000));
-        assert!(delta.is_some());
+        assert!(delta.is_none(), "First delta should be warmup (skipped)");
+        assert!(tracker.warmed_up);
+
+        // Fourth tick after another window — real delta
+        let delta = tracker.update(&make_tick(VenueId::EXCHANGE_A, 100.6, 1.0, 12_000_000));
+        assert!(delta.is_some(), "Second delta should be real");
         let delta_bps = delta.unwrap();
-        // delta = (100.5 - 100.0) / 100.0 * 10000 = 50 bps
-        assert!((delta_bps - 50.0).abs() < 1.0);
+        // delta = (100.6 - 100.5) / 100.5 * 10000 ≈ 9.95 bps
+        assert!((delta_bps - 9.95).abs() < 1.0);
     }
 
     #[test]
@@ -314,14 +361,32 @@ mod tests {
         detector.process_tick(&make_tick(VenueId::EXCHANGE_A, 100.0, 1.0, 0));
         detector.process_tick(&make_tick(VenueId::EXCHANGE_B, 100.0, 1.0, 0));
 
-        // A moves up significantly, B stays flat
-        detector.process_tick(&make_tick(VenueId::EXCHANGE_A, 100.0, 1.0, 2_000_000));
-        detector.process_tick(&make_tick(VenueId::EXCHANGE_B, 100.0, 1.0, 2_000_000));
+        // First window cycle — warmup deltas (skipped)
+        detector.process_tick(&make_tick(VenueId::EXCHANGE_A, 100.0, 1.0, 6_000_000));
+        detector.process_tick(&make_tick(VenueId::EXCHANGE_B, 100.0, 1.0, 6_000_000));
 
-        // A makes big move, B still flat
-        let signal = detector.process_tick(&make_tick(VenueId::EXCHANGE_A, 100.1, 1.0, 6_000_000));
-        // This should trigger impulse if B hasn't moved
-        // (depends on exact timing and thresholds)
+        // Both warmed up now. A moves, B stays flat (tick 3)
+        let signal = detector.process_tick(&make_tick(VenueId::EXCHANGE_A, 100.1, 1.0, 12_000_000));
+        // A delta = (100.1 - 100.0) / 100.0 * 10000 = 10 bps > 5 threshold
+        // B current_delta = (100.0 - 100.0) = 0 bps < 1.5 → lagging
+        assert!(
+            signal.is_some(),
+            "Impulse should fire: A moved 10bps, B flat at 0bps"
+        );
+        let sig = signal.unwrap();
+        assert_eq!(sig.side, OrderSide::Buy);
+        assert_eq!(sig.target_venue, VenueId::EXCHANGE_B);
+    }
+
+    #[test]
+    fn test_impulse_skipped_before_both_initialized() {
+        let mut detector = ImpulseDetector::new(5_000_000, 5.0, 1.5, 0.001, 10_000_000);
+
+        // Only A initialized — no impulse
+        detector.process_tick(&make_tick(VenueId::EXCHANGE_A, 100.0, 1.0, 0));
+        detector.process_tick(&make_tick(VenueId::EXCHANGE_A, 100.0, 1.0, 6_000_000));
+        let signal = detector.process_tick(&make_tick(VenueId::EXCHANGE_A, 100.5, 1.0, 12_000_000));
+        assert!(signal.is_none(), "No impulse: B tracker not initialized");
     }
 
     #[test]

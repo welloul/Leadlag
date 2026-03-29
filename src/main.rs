@@ -153,6 +153,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut last_price_a: Option<f64> = None;
     let mut last_price_b: Option<f64> = None;
 
+    // Per-venue tick counters for heartbeat
+    let mut tick_count_a = 0u64;
+    let mut tick_count_b = 0u64;
+    let mut last_heartbeat = std::time::Instant::now();
+
     loop {
         // Check kill switches
         if kill_switch_a.load(Ordering::SeqCst) {
@@ -167,6 +172,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         // Process ticks from exchange A
         if let Ok(tick) = tick_rx_a.try_recv() {
             tick_count += 1;
+            tick_count_a += 1;
             telemetry.log_tick(&tick);
             last_price_a = Some(tick.price);
 
@@ -246,11 +252,55 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     tick_count, signal_count
                 );
             }
+
+            // Log position summary every 50 ticks
+            if tick_count % 50 == 0 {
+                let fills = simulator.fill_history();
+                let total_fees = simulator.total_fees();
+
+                if !fills.is_empty() {
+                    // Aggregate positions from fill history
+                    use std::collections::BTreeMap;
+                    let mut pos_map: BTreeMap<String, (f64, f64, VenueId, eal::Symbol)> = BTreeMap::new();
+                    for fill in &fills {
+                        let key = format!("{:?}{}", fill.venue, fill.symbol);
+                        let entry = pos_map.entry(key).or_insert((0.0, 0.0, fill.venue, fill.symbol.clone()));
+                        let signed = match fill.side {
+                            eal::OrderSide::Buy => fill.filled_size,
+                            eal::OrderSide::Sell => -fill.filled_size,
+                        };
+                        if entry.0 == 0.0 {
+                            entry.1 = fill.avg_price;
+                        }
+                        entry.0 += signed;
+                    }
+
+                    let mut net_pnl = 0.0;
+                    let mut pos_summary = String::new();
+                    for (_, (size, entry_price, venue, symbol)) in &pos_map {
+                        let current_mid = simulator.get_mid_price(symbol, *venue)
+                            .unwrap_or(*entry_price);
+                        let unrealized = if *entry_price > 0.0 {
+                            *size * (current_mid - *entry_price)
+                        } else { 0.0 };
+                        net_pnl += unrealized;
+                        pos_summary.push_str(&format!(
+                            "\n  {:?} {} | size={:.4} | entry={:.4} | mid={:.4} | uPnL={:.2}",
+                            venue, symbol, size, entry_price, current_mid, unrealized
+                        ));
+                    }
+                    info!(
+                        "POSITIONS ({} fills, fees={:.4}):{}\n  NET PnL = {:.2}",
+                        fills.len(), total_fees, pos_summary, net_pnl
+                    );
+                }
+            }
         }
 
         // Process ticks from exchange B
         if let Ok(tick) = tick_rx_b.try_recv() {
             tick_count += 1;
+            tick_count_b += 1;
             telemetry.log_tick(&tick);
             last_price_b = Some(tick.price);
 
@@ -380,6 +430,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 }
             }
+        }
+
+        // Heartbeat every 5 seconds
+        if last_heartbeat.elapsed().as_secs() >= 5 {
+            info!(
+                "HEARTBEAT | A ticks: {} | B ticks: {} | total: {} | signals: {}",
+                tick_count_a, tick_count_b, tick_count, signal_count
+            );
+            last_heartbeat = std::time::Instant::now();
         }
 
         // Yield to scheduler — avoid blocking the async runtime.

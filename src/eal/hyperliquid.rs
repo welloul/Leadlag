@@ -36,6 +36,14 @@ struct HyperliquidTrade {
     time: u64,  // timestamp in ms
 }
 
+/// Hyperliquid WebSocket message wrapper.
+/// Responses come as {"channel": "trades", "data": [...]} not raw arrays.
+#[derive(Debug, Deserialize)]
+struct HyperliquidWsMessage {
+    channel: Option<String>,
+    data: Option<serde_json::Value>,
+}
+
 /// Hyperliquid exchange for market data
 pub struct HyperliquidExchange {
     venue_id: VenueId,
@@ -80,32 +88,59 @@ impl HyperliquidExchange {
             .await
             .map_err(|e| ExchangeError::WebSocketError(e.to_string()))?;
 
+        let symbol_name = symbol.0.clone();
+
         tokio::spawn(async move {
+            tracing::info!("Hyperliquid WS task started for {}", symbol_name);
+
             while let Some(msg) = read.next().await {
-                if let Ok(Message::Text(text)) = msg {
-                    // Hyperliquid sends array of trades
-                    if let Ok(trades) = serde_json::from_str::<Vec<HyperliquidTrade>>(&text) {
-                        for trade in trades {
-                            let price: f64 = trade.px.parse().unwrap_or(0.0);
-                            let size: f64 = trade.sz.parse().unwrap_or(0.0);
+                match msg {
+                    Ok(Message::Text(text)) => {
+                        // Try parsing as channel-wrapped message first
+                        if let Ok(ws_msg) = serde_json::from_str::<HyperliquidWsMessage>(&text) {
+                            if let (Some(channel), Some(data)) = (ws_msg.channel, ws_msg.data) {
+                                if channel == "trades" {
+                                    if let Ok(trades) = serde_json::from_value::<Vec<HyperliquidTrade>>(data) {
+                                        for trade in trades {
+                                            let price: f64 = trade.px.parse().unwrap_or(0.0);
+                                            let size: f64 = trade.sz.parse().unwrap_or(0.0);
 
-                            let tick = Tick {
-                                venue: VenueId::EXCHANGE_B,
-                                symbol: Symbol::new(&trade.coin),
-                                price,
-                                size,
-                                exchange_ts_ns: trade.time * 1_000_000,
-                                local_ts_ns: std::time::SystemTime::now()
-                                    .duration_since(std::time::UNIX_EPOCH)
-                                    .unwrap()
-                                    .as_nanos() as u64,
-                            };
+                                            if price > 0.0 && size > 0.0 {
+                                                let tick = Tick {
+                                                    venue: VenueId::EXCHANGE_B,
+                                                    symbol: Symbol::new(&trade.coin),
+                                                    price,
+                                                    size,
+                                                    exchange_ts_ns: trade.time * 1_000_000,
+                                                    local_ts_ns: std::time::SystemTime::now()
+                                                        .duration_since(std::time::UNIX_EPOCH)
+                                                        .unwrap()
+                                                        .as_nanos() as u64,
+                                                };
 
-                            let _ = sender.send(Arc::new(tick));
+                                                let _ = sender.send(Arc::new(tick));
+                                            }
+                                        }
+                                    }
+                                }
+                                // Skip non-trades channels silently
+                                continue;
+                            }
                         }
                     }
+                    Ok(Message::Close(_)) => {
+                        tracing::warn!("Hyperliquid WS closed for {}", symbol_name);
+                        break;
+                    }
+                    Err(e) => {
+                        tracing::error!("Hyperliquid WS error for {}: {}", symbol_name, e);
+                        break;
+                    }
+                    _ => {}
                 }
             }
+
+            tracing::warn!("Hyperliquid WS task ended for {}", symbol_name);
         });
 
         Ok(())
