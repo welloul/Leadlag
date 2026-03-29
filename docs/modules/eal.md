@@ -86,3 +86,28 @@ pub trait OrderExecution: Send + Sync {
 - **Output**: Order acknowledgment
 - **Side effects**: Increments order counter, stores order
 - **Complexity**: O(1)
+
+## Exchange Implementations
+
+### BinanceExchange (Exchange A)
+- **WebSocket**: `wss://fstream.binance.com/ws`
+- **Tick format**: `{"e":"trade","s":"BTCUSDT","p":"66439.00","q":"0.001","T":1774740841877}`
+- **Book subscription**: `Not implemented` — returns `Err(ExchangeError::Internal)`
+- **Tick rate**: ~18/sec per symbol (most liquid venue)
+
+### HyperliquidExchange (Exchange B)
+- **WebSocket**: `wss://api.hyperliquid.xyz/ws`
+- **Tick format**: `{"channel":"trades","data":[{"coin":"BTC","px":"66439.0","sz":"0.00017","time":1774740841877}]}`
+- **Important**: Responses are channel-wrapped (`{"channel":"trades","data":[...]}`), NOT raw arrays. Parser handles both formats.
+- **Book subscription**: `Not implemented`
+- **Tick rate**: ~1/sec per symbol (significantly slower than Binance)
+- **Connection handling**: Detects `Close` frames and `WebSocketError` — logs and exits task (no reconnection yet)
+
+### WebSocket Message Flow
+```
+1. connect_async(url) → (write, read)
+2. send subscribe message: {"method":"subscribe","subscription":{"type":"trades","coin":"BTC"}}
+3. receive subscription confirmation: {"channel":"subscriptionResponse",...}
+4. receive trades: {"channel":"trades","data":[{"coin":"BTC","px":"...",...}]}
+5. parse data as Vec<HyperliquidTrade>, convert to Tick, send to channel
+```

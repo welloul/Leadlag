@@ -4,114 +4,100 @@
 
 | # | Issue | Latency Impact | Resolution Status |
 |---|-------|----------------|-------------------|
-| H1 | Ring buffer not using bitwise mask for power-of-2 sizes | +50ns per push | ✅ Resolved — using `(head + 1) & mask` |
-| H2 | Correlation uses `sqrt()` which is slow on ARM | +200ns per calc | ⚠️ Deferred — could use fast approximation |
-| H3 | No SIMD vectorization for lag search loop | +500ns for 21 lags | ⚠️ Deferred — requires `packed_simd` crate |
-| H4 | `f64::is_finite()` check adds branch | +10ns per calc | ✅ Resolved — acceptable overhead for safety |
-| H5 | Time-grid alignment allocates Vec per tick | +1µs per tick | ✅ Resolved — fixed-size `IngestResult` array |
-| H6 | ImpulseDetector updates both trackers with every tick | Corrupted deltas | ✅ Resolved — venue-based routing |
-| H7 | NaN/Inf in MidpriceTracker bps calculation | Invalid signals | ✅ Resolved — `is_finite()` and `> 0.0` guards |
-| H8 | Signal clone on hot path (ImpulseObiEngine) | +1 allocation/signal | ✅ Resolved — `PendingSignal` (Copy) |
+| H1 | Ring buffer not using bitwise mask | +50ns per push | ✅ Resolved |
+| H2 | Correlation uses `sqrt()` (slow on ARM) | +200ns per calc | ⚠️ Deferred |
+| H3 | No SIMD vectorization for lag search | +500ns for 21 lags | ⚠️ Deferred |
+| H4 | `f64::is_finite()` check adds branch | +10ns per calc | ✅ Resolved |
+| H5 | Time-grid alignment allocates Vec per tick | +1µs per tick | ✅ Resolved |
+| H6 | ImpulseDetector cross-venue tracker pollution | Corrupted deltas | ✅ Resolved |
+| H7 | NaN/Inf in MidpriceTracker | Invalid signals | ✅ Resolved |
+| H8 | Signal clone on hot path | +1 allocation/signal | ✅ Resolved |
+| H9 | Impulse spike artifacts (382k bps) | False signals | ✅ Resolved — warmup + sanity |
+| H10 | `other_is_lagging = true` when `None` | False signals | ✅ Resolved — `None` → `false` |
 
 ## OMS
 
 | # | Issue | Latency Impact | Resolution Status |
 |---|-------|----------------|-------------------|
-| O1 | HashMap lookup for net_delta uses heap allocation | +200ns per lookup | ✅ Resolved — fixed-size array |
-| O2 | Preflight checks run sequentially | +500ns total | ⚠️ Deferred — could parallelize |
-| O3 | Self-trade prevention iterates all pending orders | O(n) per check | ✅ Resolved — acceptable for small n |
-| O4 | Kill switch uses SeqCst ordering (overkill) | +50ns per check | ⚠️ Deferred — Relaxed would suffice |
-| O5 | Execution errors swallowed — replaced with misleading RiskError | Debugging impossible | ✅ Resolved — `ExecutionFailed` variant |
+| O1 | HashMap lookup for net_delta | +200ns per lookup | ✅ Resolved |
+| O2 | Preflight checks run sequentially | +500ns total | ⚠️ Deferred |
+| O3 | Self-trade prevention O(n) | O(n) per check | ✅ Resolved |
+| O4 | Kill switch SeqCst ordering | +50ns per check | ⚠️ Deferred |
+| O5 | Execution errors swallowed | Debugging impossible | ✅ Resolved |
+| O6 | Correlation check blocks Impulse-OBI | Wrong strategy gating | ✅ Resolved — skipped for impulse_obi |
+
+## Simulator
+
+| # | Issue | Impact | Resolution Status |
+|---|-------|--------|-------------------|
+| S1 | Matchers keyed by Symbol only | Wrong-venue fills | ✅ Resolved — `(Symbol, VenueId)` |
+| S2 | `entry().or_insert_with()` in simulate_fill | Silent empty book creation | ✅ Resolved — `get_mut()` |
+| S3 | Execution price from source tick | Wrong price for cross-venue | ✅ Resolved — `get_mid_price()` |
+| S4 | Single global spread model | Unrealistic fills | ✅ Resolved — per-venue spread |
+| S5 | No other-venue book seeding | One venue always empty | ✅ Resolved — seed from first tick |
 
 ## Infra
 
-| # | Issue | Latency Impact | Resolution Status |
-|---|-------|----------------|-------------------|
-| I1 | No CPU pinning on macOS (only Linux) | Variable jitter | ✅ Resolved — conditional compilation |
-| I2 | Telemetry writer uses BufWriter (not mmap) | +100µs per flush | ⚠️ Deferred — mmap adds complexity |
-| I3 | Sled DB flush blocks on drop | +10ms shutdown | ✅ Resolved — background flush |
-| I4 | No graceful WebSocket reconnection | N/A | ⚠️ Deferred — requires state recovery |
-| I5 | Starlink latency spikes not detected | N/A | ⚠️ Deferred — needs RTT monitoring |
-| I6 | Book subscriptions not available for live exchanges | N/A | ⚠️ Deferred — Binance/HL return `Not implemented` |
-| I7 | Main loop uses `yield_now()` instead of spin-loop | +1-10µs jitter | ⚠️ Deferred — async runtime constraint |
+| # | Issue | Resolution Status |
+|---|-------|-------------------|
+| I1 | No CPU pinning on macOS | ✅ Resolved |
+| I2 | Telemetry writer uses BufWriter | ⚠️ Deferred |
+| I3 | Sled DB flush blocks on drop | ✅ Resolved |
+| I4 | No graceful WebSocket reconnection | ⚠️ Deferred |
+| I5 | Starlink latency spikes not detected | ⚠️ Deferred |
+| I6 | Book subscriptions not available for live exchanges | ⚠️ Deferred — synthetic books used |
+| I7 | Main loop uses `yield_now()` instead of spin-loop | ⚠️ Deferred |
+| I8 | Hyperliquid WS parsing broken | ✅ Resolved — channel-wrapped format |
 
 ## Known Technical Debt
 
-1. **Unused imports** — ~30 compiler warnings for unused code. Low priority.
-2. **No live exchange OrderExecution** — Only `MarketData` implemented for Binance/Hyperliquid.
-3. **No Prometheus metrics** — Monitoring infrastructure missing.
-4. **Impulse-OBI HIGH conviction** — When impulse and OBI fire in quick succession, the `CombinedSignal` only carries one of the two original signals (the triggering one). The pending signal metadata is consumed. This is acceptable for v0.1 but loses signal attribution.
+1. ~30 compiler warnings for unused code.
+2. No live exchange `OrderExecution` — only `MarketData` for Binance/Hyperliquid.
+3. No Prometheus metrics.
+4. Low fill rate with Hyperliquid (~1 tick/sec vs Binance ~18/sec). The `other_is_lagging` check requires both venues to have recent deltas.
+5. "No book" errors when target venue book isn't populated before signal executes.
+6. ZEC/LINK initial price delta is massive between venues. Warmup handles this but limits signal generation for these symbols.
 
 ---
 
-## Critical Observations (Plan Review — 2026-03-27)
+## AWS Deployment Findings (v0.1.2)
 
-### C1: Main Loop Not Connected to Signal Pipeline ✅ RESOLVED
-**File**: `src/main.rs`
-**Resolution**: Main loop now calls `pipeline.process_pair()`, `pipeline.process_tick()`, and `pipeline.process_book()` for both exchanges. Full data flow wired up.
+### Symbol Performance (20-min run: ZEC WLD FARTCOIN DOGE SUI BCH PUMP ADA)
 
-### C2: TimeGrid Allocates Vec Per Tick (Hot Path Violation) ✅ RESOLVED
-**File**: `src/signal/timegrid.rs`
-**Resolution**: `ingest_tick()` now returns `IngestResult` with a fixed-size `[AlignedPair; 64]` array and a count. Zero heap allocation.
+| Symbol | Impulses | Binance ticks | HL ticks | Notes |
+|--------|----------|---------------|----------|-------|
+| PUMP | 52 | High | Medium | Most volatile, frequent signals |
+| WLD | 12 | High | Medium | Active on both venues |
+| ZEC | 10 | Medium | Medium | Massive initial delta handled by sanity |
+| FARTCOIN | 3 | High | Low | HL ticks too slow for lagging check |
+| BCH | 1 | High | Low | Same issue |
+| BTC, ETH, SOL, TAO | Mixed | Very high | Low | HL rate too slow |
+| DOGE, SUI, ADA | 0 | High | Low | No impulses detected |
 
-### C3: NetDelta Uses HashMap Instead of Array ✅ RESOLVED
-**File**: `src/oms/mod.rs`
-**Resolution**: `NetDelta` now uses `[[Option<Position>; MAX_SYMBOLS]; MAX_VENUES]` with O(1) array indexing. `symbol_indices: Vec<(Symbol, usize)>` provides the mapping.
+### Root Cause of Low Fill Rate
 
-### C4: Preflight Slippage Check Ignores Price Parameter ✅ RESOLVED
-**File**: `src/oms/preflight.rs`
-**Resolution**: `check_max_slippage()` now uses a size-impact model: `slippage_bps = base_slippage + (size_impact * notional / 1000)`. Uses order notional to estimate realistic slippage for liquid markets.
+The `other_is_lagging` check requires:
+1. Both trackers `initialized` (have at least 1 tick)
+2. Both trackers `warmed_up` (completed 1 full window cycle)
+3. The other tracker's `current_delta()` returns `Some(d)` with `|d| < 1.5 bps`
 
-### C5: No Integration Tests ✅ RESOLVED
-**File**: `tests/integration_test.rs`, `tests/signal_flow_test.rs`
-**Resolution**: 7 integration tests and 4 signal flow tests now pass. Cover tick-to-signal-to-order flow, risk rejection, fill processing, daily loss limits, self-trade prevention, timegrid alignment with gaps, and correlation with lag.
+With Hyperliquid sending ~1 tick/sec and Binance sending ~18/sec, the other tracker's delta is often `None` (window hasn't elapsed on HL's side) → `other_is_lagging = false` → no order.
 
-### C6: Signal Pipeline Not Wired in Main Loop ✅ RESOLVED
-**File**: `src/main.rs`
-**Resolution**: Same as C1. Pipeline is fully wired with three entry points: `process_pair()`, `process_tick()`, `process_book()`.
-
-### C7: Hysteresis Test Has Incorrect Threshold Values ✅ RESOLVED
-**File**: `src/signal/hysteresis.rs`
-**Resolution**: Test renamed to `test_no_flip_when_current_lead_reasserts` with accurate comments describing streak-based behavior. The `threshold_margin` field is stored but not used in the update logic (streak-based only).
-
-### C8: Binance/Hyperliquid Exchanges Don't Implement OrderExecution ⚠️ DEFERRED
-**Files**: `src/eal/binance.rs`, `src/eal/hyperliquid.rs`
-**Status**: Still deferred — expected for paper trading phase. Will be needed for live trading.
+**Potential fixes:**
+- Increase `impulse_window_ms` from 5 to 50-100ms to match HL's tick rate
+- Use `None` = lagging (was original behavior, removed due to false spikes)
+- Require only `initialized` check, not `warmed_up` (but this re-enables initial spike artifacts)
 
 ---
 
-## Test Coverage Summary (Updated v0.1.1)
-
-```
-Module                  Unit Tests    Integration Tests    Coverage
-─────────────────────────────────────────────────────────────────────
-signal/ring_buffer      ✓ 8 tests    ✓ (via flow tests)   Good
-signal/correlation      ✓ 6 tests    ✓ (via flow tests)   Good
-signal/hysteresis       ✓ 7 tests    ✓ (via flow tests)   Good
-signal/timegrid         ✓ 3 tests    ✓ (via flow tests)   Good
-signal/impulse          ✓ 4 tests    ✗                    Good
-signal/impulse_obi      ✓ 5 tests    ✗                    Good
-signal/obi_divergence   ✓ 3 tests    ✗                    Good
-oms/preflight           ✓ 3 tests    ✗                    Good
-oms/mod                 ✓ 2 tests    ✓ (via integration)  Good
-sim/matcher             ✓ 4 tests    ✗                    Good
-sim/mod                 ✓ 1 test     ✗                    Partial
-eal/mock                ✓ 3 tests    ✓ (via integration)  Good
-persist/telemetry       ✓ 1 test     ✗                    Minimal
-persist/state           ✓ 3 tests    ✗                    Good
-config/schema           ✓ 3 tests    ✗                    Good
-─────────────────────────────────────────────────────────────────────
-TOTAL                   59 unit      11 integration        ~85%
-```
-
-## Priority Matrix (Updated v0.1.1)
+## Priority Matrix
 
 | Priority | Issue | Impact | Effort |
 |----------|-------|--------|--------|
-| P0 | I4: WebSocket reconnection | Production resilience | Medium |
-| P1 | I6: Live exchange book subscriptions | OBI strategy live capability | High |
-| P1 | I7: Spin-loop on dedicated thread | Latency optimization | Medium |
-| P2 | H2: Fast sqrt approximation | Marginal latency gain | Low |
-| P2 | H3: SIMD lag search | Latency optimization | High |
-| P3 | O4: Kill switch relaxed ordering | Micro-optimization | Low |
-| P3 | I2: Telemetry mmap | I/O optimization | Medium |
+| P0 | Tune impulse_window_ms for HL tick rate | Enable fills | Low |
+| P0 | Fix "No book" race condition | Enable fills | Medium |
+| P1 | WebSocket reconnection | Production resilience | Medium |
+| P1 | Live exchange book subscriptions | OBI live capability | High |
+| P2 | Per-venue latency asymmetry | Realistic sim | Medium |
+| P2 | SIMD lag search | Latency optimization | High |
+| P3 | Prometheus metrics | Monitoring | Medium |

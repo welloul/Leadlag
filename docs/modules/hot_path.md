@@ -35,6 +35,9 @@ Process incoming ticks from both exchanges, compute cross-correlation, detect le
 5. **Single consumer**: One thread reads from crossbeam channel
 6. **Venue-routed tracking**: `ImpulseDetector` routes ticks to `tracker_a` (Exchange A) or `tracker_b` (Exchange B) only — never both. Cross-pollution was a critical bug fixed in v0.1.1.
 7. **NaN/Inf guards**: `MidpriceTracker::update()` rejects invalid prices and checks `is_finite()` before division.
+8. **Warmup gate**: Both trackers must be `initialized` AND `warmed_up` before generating impulses. Prevents 382k bps initialization spike artifacts.
+9. **Sanity check**: Deltas > 500 bps are silently rejected. Real microstructure impulses are 5-50 bps.
+10. **Conservative lagging**: `None` from `other_delta()` means "no data yet" and is treated as NOT lagging.
 
 ## Memory Layout
 
@@ -106,13 +109,17 @@ Total: 10 bytes (padded to 16)
 ### `MidpriceTracker::update(tick) -> Option<f64>`
 - **Input**: Tick from one exchange only
 - **Output**: Delta in bps if window elapsed, None otherwise
-- **Side effects**: Updates `current_mid`, `prev_mid`, `prev_timestamp_ns`
+- **Side effects**: Updates `current_mid`, `prev_mid`, `prev_timestamp_ns`, sets `initialized`/`warmed_up`
 - **Complexity**: O(1)
 - **Guards**: Rejects prices <= 0.0 or non-finite. Returns None if division would produce NaN/Inf.
+- **Warmup**: First delta after init is skipped (sets `warmed_up = true`). Prevents initial cross-venue price spike.
 
 ### `ImpulseDetector::process_tick(tick) -> Option<ImpulseSignal>`
 - **Input**: Tick from a specific venue
-- **Output**: Impulse signal if threshold exceeded and other venue is lagging
+- **Output**: Impulse signal if:
+  1. Both trackers `initialized` AND `warmed_up`
+  2. Delta > `impulse_threshold_bps` (5 bps) AND < 500 bps (sanity)
+  3. Other tracker's delta < `lag_threshold_bps` (1.5 bps)
 - **Side effects**: Routes tick to correct tracker (venue-based)
 - **Complexity**: O(1)
 
