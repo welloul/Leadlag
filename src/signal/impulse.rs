@@ -194,7 +194,10 @@ impl ImpulseDetector {
 
         let venue = tick.venue;
         let symbol = tick.symbol.clone();
-        let timestamp_ns = tick.exchange_ts_ns;
+        let timestamp_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
 
         // Route tick to the correct tracker only (Issue 5 fix)
         let delta = match venue {
@@ -242,10 +245,14 @@ impl ImpulseDetector {
                 // Check if other exchange is lagging (flat or minimal move).
                 // None means the other tracker has data but hasn't completed a
                 // window cycle yet — treat as NOT lagging (conservative).
-                let other_is_lagging = match other_delta {
-                    Some(d) => d.is_finite() && d.abs() < self.lag_threshold_bps,
-                    None => false, // Other venue has data but no delta yet — don't assume lagging
-                };
+                // let other_is_lagging = match other_delta {
+                //     Some(d) => d.is_finite() && d.abs() < self.lag_threshold_bps,
+                //     None => false, // Other venue has data but no delta yet — don't assume lagging
+                // };
+
+                // TEMP: skip lagging check to increase entry frequency.
+                // Every impulse > threshold generates a signal targeting the other venue.
+                let other_is_lagging = true;
 
                 if other_is_lagging {
                     tracing::info!(

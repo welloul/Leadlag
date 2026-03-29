@@ -233,6 +233,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     signal.lag_offset_ns,
                 );
 
+                // Ensure target venue has a book before sending order.
+                // If the target venue hasn't sent ticks recently, seed its book
+                // from this tick's price so the simulator can fill.
+                if !simulator.is_venue_liquid(&signal.symbol, signal.target_venue) {
+                    simulator.update_book_from_tick(&signal.symbol, tick.price, signal.target_venue);
+                }
+
                 // Use target venue's price for risk checks and execution
                 let exec_price = simulator.get_mid_price(&signal.symbol, signal.target_venue)
                     .unwrap_or(tick.price);
@@ -357,6 +364,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     signal.correlation_r,
                     signal.lag_offset_ns,
                 );
+
+                // Ensure target venue has a book before sending order
+                if !simulator.is_venue_liquid(&signal.symbol, signal.target_venue) {
+                    simulator.update_book_from_tick(&signal.symbol, tick.price, signal.target_venue);
+                }
 
                 // Use target venue's price for risk checks and execution
                 let exec_price = simulator.get_mid_price(&signal.symbol, signal.target_venue)
