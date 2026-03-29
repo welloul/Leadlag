@@ -37,7 +37,7 @@ max_rtt_ms = 100
 # Strategy selection: "correlation_hysteresis" or "impulse_obi"
 active_strategy = "impulse_obi"
 
-symbols = ["ZEC", "XMR", "LINK"]
+symbols = ["ZEC", "WLD", "FARTCOIN", "DOGE", "SUI", "BCH", "PUMP", "ADA"]
 
 # Correlation-Hysteresis settings (existing)
 window_size_ticks = 256     # Must be power of 2 for ring buffer optimization
