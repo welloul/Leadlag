@@ -27,6 +27,20 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{info, warn};
 
+/// Normalize venue symbol to a canonical form for cross-venue keying.
+/// Strips common suffixes like "USDT", "USDC" so Binance's "ZECUSDT"
+/// matches Hyperliquid's "ZEC" in the simulator.
+fn normalize_symbol(sym: &eal::Symbol) -> eal::Symbol {
+    let s = &sym.0;
+    if let Some(stripped) = s.strip_suffix("USDT") {
+        return eal::Symbol::new(stripped);
+    }
+    if let Some(stripped) = s.strip_suffix("USDC") {
+        return eal::Symbol::new(stripped);
+    }
+    sym.clone()
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Load settings
@@ -176,14 +190,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             telemetry.log_tick(&tick);
             last_price_a = Some(tick.price);
 
-            // Update Exchange A's book at its actual price
-            simulator.update_book_from_tick(&tick.symbol, tick.price, tick.venue);
-
-            // Seed Exchange B's book from A's price if B hasn't sent any ticks yet.
-            // In real trading, B's book exists independently. Here we approximate it.
-            if last_price_b.is_none() {
-                simulator.update_book_from_tick(&tick.symbol, tick.price, VenueId::EXCHANGE_B);
-            }
+            // Update Exchange A's book at its actual price.
+            // Normalize symbol (strip USDT suffix) so Binance and HL share the same key.
+            // Only update the venue that sent the tick — never seed other venues with fake data.
+            let norm_sym = normalize_symbol(&tick.symbol);
+            simulator.update_book_from_tick(&norm_sym, tick.price, tick.venue);
 
             // Process through time grid (zero-cost, no heap allocation)
             let ingest_result = timegrid.ingest_tick(&tick);
@@ -233,22 +244,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     signal.lag_offset_ns,
                 );
 
-                // Ensure target venue has a book before sending order.
-                // If the target venue hasn't sent ticks recently, seed its book
-                // from this tick's price so the simulator can fill.
-                if !simulator.is_venue_liquid(&signal.symbol, signal.target_venue) {
-                    simulator.update_book_from_tick(&signal.symbol, tick.price, signal.target_venue);
-                }
+                // Check target venue book staleness.
+                // Normalize symbol for cross-venue keying (Binance: ZECUSDT → ZEC).
+                // Allow stale books <2s old. Never seed with fake data.
+                let sig_sym = normalize_symbol(&signal.symbol);
+                let staleness_ms = simulator.book_staleness_ns(&sig_sym, signal.target_venue)
+                    .map(|ns| ns as f64 / 1e6);
+                let has_book = simulator.is_venue_liquid(&sig_sym, signal.target_venue);
 
-                // Use target venue's price for risk checks and execution
-                let exec_price = simulator.get_mid_price(&signal.symbol, signal.target_venue)
-                    .unwrap_or(tick.price);
-                match oms.process_signal(&signal, exec_price, &simulator).await {
-                    Ok(ack) => {
-                        info!("Order submitted: {}", ack.order_id);
+                match (has_book, staleness_ms) {
+                    (false, _) => {
+                        tracing::debug!("SKIP: no book for {:?} {}", signal.target_venue, sig_sym);
                     }
-                    Err(e) => {
-                        warn!("Order rejected: {}", e);
+                    (true, Some(ms)) if ms > 2000.0 => {
+                        tracing::debug!("SKIP: book {:.0}ms stale for {:?} {}", ms, signal.target_venue, sig_sym);
+                    }
+                    _ => {
+                        // Fresh or stale <2s — trade it
+                        if let Some(ms) = staleness_ms {
+                            if ms > 100.0 {
+                                info!("STALE_BOOK ({:.0}ms): {} {} on {:?}", ms, signal.side, sig_sym, signal.target_venue);
+                            }
+                        }
+                // Use target venue's price for risk checks and execution
+                let exec_price = simulator.get_mid_price(&sig_sym, signal.target_venue)
+                    .unwrap_or(tick.price);
+                        match oms.process_signal(&signal, exec_price, &simulator).await {
+                            Ok(ack) => {
+                                info!("Order submitted: {}", ack.order_id);
+                            }
+                            Err(e) => {
+                                warn!("Order rejected: {}", e);
+                            }
+                        }
                     }
                 }
             }
@@ -311,13 +339,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             telemetry.log_tick(&tick);
             last_price_b = Some(tick.price);
 
-            // Update Exchange B's book at its actual price
-            simulator.update_book_from_tick(&tick.symbol, tick.price, tick.venue);
-
-            // Seed Exchange A's book from B's price if A hasn't sent any ticks yet
-            if last_price_a.is_none() {
-                simulator.update_book_from_tick(&tick.symbol, tick.price, VenueId::EXCHANGE_A);
-            }
+            // Update Exchange B's book at its actual price.
+            // Normalize symbol so Binance and HL share the same key.
+            let norm_sym = normalize_symbol(&tick.symbol);
+            simulator.update_book_from_tick(&norm_sym, tick.price, tick.venue);
 
             let ingest_result = timegrid.ingest_tick(&tick);
 
@@ -365,20 +390,35 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     signal.lag_offset_ns,
                 );
 
-                // Ensure target venue has a book before sending order
-                if !simulator.is_venue_liquid(&signal.symbol, signal.target_venue) {
-                    simulator.update_book_from_tick(&signal.symbol, tick.price, signal.target_venue);
-                }
+                // Check target venue book staleness — allow stale <2s, never seed fake data
+                let sig_sym = normalize_symbol(&signal.symbol);
+                let staleness_ms = simulator.book_staleness_ns(&sig_sym, signal.target_venue)
+                    .map(|ns| ns as f64 / 1e6);
+                let has_book = simulator.is_venue_liquid(&sig_sym, signal.target_venue);
 
-                // Use target venue's price for risk checks and execution
-                let exec_price = simulator.get_mid_price(&signal.symbol, signal.target_venue)
-                    .unwrap_or(tick.price);
-                match oms.process_signal(&signal, exec_price, &simulator).await {
-                    Ok(ack) => {
-                        info!("Order submitted: {}", ack.order_id);
+                match (has_book, staleness_ms) {
+                    (false, _) => {
+                        tracing::debug!("SKIP: no book for {:?} {}", signal.target_venue, sig_sym);
                     }
-                    Err(e) => {
-                        warn!("Order rejected: {}", e);
+                    (true, Some(ms)) if ms > 2000.0 => {
+                        tracing::debug!("SKIP: book {:.0}ms stale for {:?} {}", ms, signal.target_venue, sig_sym);
+                    }
+                    _ => {
+                        if let Some(ms) = staleness_ms {
+                            if ms > 100.0 {
+                                info!("STALE_BOOK ({:.0}ms): {} {} on {:?}", ms, signal.side, sig_sym, signal.target_venue);
+                            }
+                        }
+                        let exec_price = simulator.get_mid_price(&sig_sym, signal.target_venue)
+                            .unwrap_or(tick.price);
+                        match oms.process_signal(&signal, exec_price, &simulator).await {
+                            Ok(ack) => {
+                                info!("Order submitted: {}", ack.order_id);
+                            }
+                            Err(e) => {
+                                warn!("Order rejected: {}", e);
+                            }
+                        }
                     }
                 }
             }
@@ -446,9 +486,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Heartbeat every 5 seconds
         if last_heartbeat.elapsed().as_secs() >= 5 {
+            let sim_metrics = simulator.metrics();
             info!(
-                "HEARTBEAT | A ticks: {} | B ticks: {} | total: {} | signals: {}",
-                tick_count_a, tick_count_b, tick_count, signal_count
+                "HEARTBEAT | A ticks: {} | B ticks: {} | total: {} | signals: {} | {}",
+                tick_count_a, tick_count_b, tick_count, signal_count, sim_metrics.summary()
             );
             last_heartbeat = std::time::Instant::now();
         }
