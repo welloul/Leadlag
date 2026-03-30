@@ -1,296 +1,130 @@
-# Impulse-OBI Strategy
+# Impulse-OBI Strategy (v0.1.3)
 
 ## Overview
 
-The Impulse-OBI strategy is an **event-driven microstructure alpha** strategy that exploits real-time market microstructure inefficiencies between cryptocurrency exchanges. Unlike the correlation-hysteresis strategy which relies on statistical lead-lag relationships, Impulse-OBI reacts to immediate market events.
+Event-driven microstructure alpha strategy that exploits real-time market inefficiencies between cryptocurrency exchanges. Combines trade impulse detection with order book imbalance divergence.
 
-## Core Philosophy
+## Entry Logic Gate (v0.1.3)
 
-> "Be EARLY, not fastest"
+Every signal must pass ALL gates before execution:
 
-The strategy detects:
-1. **Trade Impulse** — One exchange moves, the other hasn't reacted yet
-2. **OBI Divergence** — One exchange shows strong order book pressure, the other is neutral
-
-By combining these two signals, the strategy generates high-conviction trades with minimal latency.
-
----
+```
+Tick/Book ──▶ Signal Detected
+                │
+                ├─ [1] Warmup gate: both trackers init + warmed_up?
+                ├─ [2] Sanity gate: delta < 500 bps?
+                ├─ [3] Freshness gate: both venues ticked within 400ms (local)?
+                ├─ [4] Lag gate: other venue |delta| < 1.5 bps?
+                ├─ [5] Edge gate: cross-venue spread ≥ 8 bps (direction-normalized)?
+                ├─ [6] Cooldown: 200ms since last (symbol, side) trade?
+                ├─ [7] Position cap: cumulative notional < $100 per (venue, symbol)?
+                ├─ [8] Book age gate: target venue book < 400ms stale?
+                ├─ [9] TTL: signal age < 500ms?
+                └─ [10] Conservative fill: 50% of best level size
+                │
+                ▼
+            ORDER SUBMITTED
+```
 
 ## Datapoint 1: Trade Impulse Detection
 
-### What It Detects
-
-Fast price moves on one exchange while the other remains flat. This is **pure alpha** — no correlation needed.
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  IMPULSE DETECTION (5ms window, ~50ns)                      │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  Exchange A:  100.00 → 100.05 (+50 bps)  ← IMPULSE        │
-│  Exchange B:  100.00 → 100.00 (flat)     ← NOT REACTED    │
-│                                                             │
-│  Action: BUY Exchange B (expect catch-up)                   │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
-
 ### Algorithm
 
-1. **Track midprice** for both exchanges over 5ms window
-2. **Calculate delta**: `delta = mid_now - mid_prev_5ms`
-3. **Detect impulse**: `|delta_A| > 5 bps AND |delta_B| < 1.5 bps`
-4. **Direction**: `delta > 0` → bullish, `delta < 0` → bearish
+1. **Track midprice** for both exchanges over 5ms window (exchange timestamps)
+2. **Local freshness**: `last_local_update_ns` uses `SystemTime::now()` — exchange clocks unreliable across venues
+3. **Warmup**: First delta after init is skipped (prevents 382k bps spike artifacts)
+4. **Detect impulse**: `|delta_A| > 5 bps AND |delta_B| < 1.5 bps`
+5. **Direction**: `delta > 0` → BUY laggard, `delta < 0` → SELL laggard
+
+### Parameters (v0.1.3)
+
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `impulse_threshold_bps` | 5 | Price move threshold (3-10 bps) |
+| `lag_threshold_bps` | 1.5 | Max move on other exchange (1-2 bps) |
+| `impulse_window_ms` | 5 | Lookback window |
+| `venue_freshness_ms` | 400 | Both venues must have ticked within this window |
+| `entry_threshold_bps` | 8 | Minimum cross-venue edge (covers fees + slippage) |
+| `cooldown_ms` | 200 | Side-aware cooldown between trades |
+
+## Datapoint 2: OBI Divergence (v0.1.3)
+
+### Depth-Weighted OBI
+
+```rust
+OBI = Σ(size_i * weight_i) on bid side / total_weighted_volume
+weight_i = 1.0 / (i + 1.0)  // Level 0: 1.0, Level 1: 0.5, Level 2: 0.33...
+```
+
+Top levels dominate — spoofing on deep levels has less impact.
+
+### Time-Based Persistence
+
+OBI must stay strong for `obi_persist_ms` (200ms default) before generating a signal. Not count-based (which varies by venue: Binance 80/sec vs HL 4/sec).
 
 ### Parameters
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `impulse_threshold_bps` | 5 | Price move threshold to detect impulse (3-10 bps) |
-| `lag_threshold_bps` | 1.5 | Max move on other exchange to consider it "lagging" (1-2 bps) |
-| `impulse_window_ms` | 5 | Lookback window for price change detection |
-| `min_trade_size_filter` | 0.001 | Minimum trade size to filter fake impulses |
-
-### Execution
-
-**Bullish impulse (A moves up, B flat):**
-- Place BUY limit at B's best bid
-- Expect B to catch up to A
-
-**Bearish impulse (A moves down, B flat):**
-- Place SELL limit at B's best ask
-- Expect B to catch down to A
-
-### Timing
-
-- Signal valid for: **1-20ms window**
-- After that: alpha gone
-- Cancel if: B starts moving, spread widens, OBI turns against you
-
----
-
-## Datapoint 2: OBI Divergence
-
-### What It Detects
-
-Order book imbalance divergence between exchanges. When one exchange shows strong bid/ask pressure while the other is neutral, expect price movement.
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  OBI DIVERGENCE (order book update, ~100ns)                 │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  Exchange A:  OBI = +0.6 (bid-heavy, bullish)              │
-│  Exchange B:  OBI = +0.1 (neutral)                         │
-│                                                             │
-│  Divergence: 0.5 > threshold (0.3)                         │
-│  Action: BUY Exchange B (expect propagation)                │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Algorithm
-
-1. **Calculate OBI** for both exchanges:
-   ```
-   OBI = (bid_volume - ask_volume) / (bid_volume + ask_volume)
-   ```
-   Range: [-1.0, 1.0] where positive = bid-heavy (bullish)
-
-2. **Detect divergence**:
-   - `OBI_A > 0.7` AND `|OBI_B| < 0.2` → Bullish divergence
-   - `OBI_A < -0.7` AND `|OBI_B| < 0.2` → Bearish divergence
-
-3. **Liquidity shift detection**:
-   - `delta_OBI = OBI_now - OBI_prev`
-   - Trigger when `delta_OBI > spike_threshold`
-
-### Parameters
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `obi_strong_threshold` | 0.7 | OBI value considered strong (0.6-0.8) |
-| `obi_neutral_threshold` | 0.2 | OBI value considered neutral |
-| `obi_depth` | 5 | Order book depth for OBI calculation (5-10 levels) |
-| `obi_spike_threshold` | 0.3 | OBI delta for liquidity shift detection |
-
-### Execution
-
-**Bullish imbalance on A:**
-- Place BUY limit at B's bid
-- Expect B to follow A's bullish pressure
-
-**Bearish imbalance on A:**
-- Place SELL limit at B's ask
-- Expect B to follow A's bearish pressure
-
-### Timing
-
-- OBI signals last longer than impulse: **10ms → 100ms**
-- Better for maker fills and patience
-
----
+| `obi_strong_threshold` | 0.7 | Strong imbalance |
+| `obi_neutral_threshold` | 0.2 | Neutral zone |
+| `obi_depth` | 5 | Book levels for OBI calc |
+| `obi_spike_threshold` | 0.3 | Liquidity shift detection |
+| `obi_persist_ms` | 200 | Time-based persistence duration |
 
 ## Combined Signal Priority
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  SIGNAL PRIORITY                                            │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  Impulse + OBI confirms  →  🔥 HIGH (execute immediately)  │
-│  Impulse only            →  ⚡ MEDIUM (execute with caution)│
-│  OBI only                →  ⚡ MEDIUM (maker-only)          │
-│  Neither                 →  ❌ NO SIGNAL                    │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
+| Combination | Priority | Action |
+|-------------|----------|--------|
+| Impulse + OBI confirms | HIGH | Execute immediately |
+| Impulse only | MEDIUM | Execute with caution |
+| OBI only | MEDIUM | Maker-only |
+| Neither | NONE | No signal |
 
-### Enhancement: Liquidity Shift Detection
+## Cross-Venue Edge Check (v0.1.3)
 
-Instead of just OBI level, detect **delta_obi**:
+Direction-normalized edge calculation:
 
-```
-delta_obi = obi_a_now - obi_a_prev
-```
-
-Trigger when:
-```
-delta_obi > spike_threshold
+```rust
+edge_bps = match side {
+    Buy  => (target_mid - source_mid) / source_mid * 10_000.0,
+    Sell => (source_mid - target_mid) / source_mid * 10_000.0,
+};
+// Positive = good trade, negative = bad trade
+if edge_bps < entry_threshold_bps (8 bps) { reject }
 ```
 
-This catches **sudden liquidity pulls** (VERY predictive).
+## Position Cap (v0.1.3)
 
----
+- $100 max cumulative notional per `(venue, symbol)`
+- Direction-aware: if LONG, can SHORT to reduce but can't add more LONG
+- `max_notional_usd = $10` per individual trade
+- Prevents the $1.6M PUMP incident (323 accumulated trades with no cap)
 
-## Cancel Conditions
-
-Cancel order if:
-1. **Lag closed** — B midprice starts moving
-2. **Spread widened** — Spread exceeds `spread_filter_bps`
-3. **OBI against** — OBI turns against your direction
-4. **Timeout** — Signal age exceeds `signal_timeout_ms`
-
----
-
-## Critical Pitfalls
-
-### ❌ Fake Impulses
-
-**Cause:** Single small trade, thin book
-**Fix:** `min_trade_size_filter` — ignore trades below threshold
-
-### ❌ Spoofing (OBI Trap)
-
-**Cause:** Fake large orders that disappear
-**Fix:** Require persistence (e.g., 2-3 updates)
-
-### ❌ Self-Impact
-
-**Cause:** Your own order moves price
-**Fix:** Stay small (you already do)
-
-### ❌ Spread Traps
-
-**Cause:** Wide spread = fake opportunity
-**Fix:** Strict `spread_filter_bps` filter
-
----
-
-## Integration with Correlation-Hysteresis
-
-The Impulse-OBI strategy can run alongside correlation-hysteresis:
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                 HYBRID SIGNAL ENGINE                         │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  ┌─────────────┐    ┌─────────────┐                        │
-│  │  IMPULSE    │    │    OBI      │                        │
-│  │  DETECTOR   │    │ DIVERGENCE  │                        │
-│  └──────┬──────┘    └──────┬──────┘                        │
-│         └──────────────────┼────────────────┐               │
-│                            │                │               │
-│                    ┌───────▼───────┐        │               │
-│                    │   EVENT       │        │               │
-│                    │   AGGREGATOR  │        │               │
-│                    └───────┬───────┘        │               │
-│                            │                │               │
-│                    ┌───────▼───────┐        │               │
-│                    │ CORRELATION   │ ← Confirmation layer  │
-│                    │   ENGINE      │        │               │
-│                    └───────┬───────┘        │               │
-│                            │                │               │
-│                    ┌───────▼───────┐        │               │
-│                    │  HYSTERESIS   │        │               │
-│                    │   + OMS       │        │               │
-│                    └───────────────┘        │               │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
-
-**Event detectors are PRIMARY triggers** (not correlation)
-**Correlation is CONFIRMATION** (not primary signal)
-**Hysteresis validates** event-driven signals
-
----
-
-## Configuration Example
+## Configuration (v0.1.3)
 
 ```toml
 [strategy]
 active_strategy = "impulse_obi"
-symbols = ["ZEC", "XMR", "LINK"]
-
-# Impulse settings
+symbols = ["ZEC", "WLD", "FARTCOIN", "DOGE", "SUI", "BCH", "PUMP", "ADA"]
 impulse_threshold_bps = 5
 lag_threshold_bps = 1.5
 impulse_window_ms = 5
-signal_timeout_ms = 10
+signal_timeout_ms = 150         # Combo window
 min_trade_size_filter = 0.001
 spread_filter_bps = 10
-
-# OBI settings
 obi_strong_threshold = 0.7
 obi_neutral_threshold = 0.2
 obi_depth = 5
 obi_spike_threshold = 0.3
+venue_freshness_ms = 400
+entry_threshold_bps = 8
+cooldown_ms = 200
+max_levels_consumed = 3
+obi_persist_ms = 200
+fill_conservatism = 0.5
+
+[risk]
+max_notional_usd = 10.0
+signal_ttl_ms = 500
 ```
-
----
-
-## Performance Characteristics
-
-| Metric | Value |
-|--------|-------|
-| Latency | ~100ns per tick |
-| Memory | Stack-allocated, zero heap |
-| Signal frequency | 1-10 per minute (market dependent) |
-| Win rate | 55-65% (backtested) |
-| Avg hold time | 5-50ms |
-
----
-
-## When to Use
-
-**Use Impulse-OBI when:**
-- Market is volatile (frequent price moves)
-- You want fast, event-driven signals
-- You're comfortable with maker-only execution
-- You have low-latency infrastructure
-
-**Use Correlation-Hysteresis when:**
-- Market is ranging (low volatility)
-- You want confirmed, statistical signals
-- You're comfortable with slower execution
-- You want higher win rate
-
----
-
-## Future Enhancements
-
-1. **Multi-venue OBI** — Aggregate OBI across 3+ exchanges
-2. **Trade flow toxicity** — Detect informed flow
-3. **Inventory pressure** — Market maker position signals
-4. **Cross-asset correlation** — BTC impulse → ALT reaction

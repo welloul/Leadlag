@@ -3,15 +3,6 @@
 ## Objective
 Persist raw ticks and lead-lag offset logs to binary files for replay. Write state to Sled embedded database for crash recovery. All writes are non-blocking to avoid stalling the hot path.
 
-## Latency Profile
-
-| Operation | O(n) | Cycles | Notes |
-|-----------|------|--------|-------|
-| Channel send | O(1) | ~50 | crossbeam try_send |
-| Binary encode | O(1) | ~100 | prost or manual |
-| BufWriter flush | O(b) | ~1000 | b = buffer size |
-| **Total (hot path)** | **O(1)** | **~50** | **Only channel send** |
-
 ## Invariants
 
 1. **Fire-and-forget**: Hot path never waits for disk writes
@@ -19,49 +10,23 @@ Persist raw ticks and lead-lag offset logs to binary files for replay. Write sta
 3. **try_send only**: Drop telemetry if channel full (log warning)
 4. **Background thread**: Dedicated writer thread handles all I/O
 
-## Memory Layout
-
-```
-TelemetryWriter:
-┌─────────────────────────────────────────┐
-│ sender: Sender<TelemetryEntry>          │
-│ shutdown: Arc<AtomicBool>               │
-│ handle: Option<JoinHandle<()>>          │
-└─────────────────────────────────────────┘
-
-TelemetryEntry (enum):
-┌─────────────────────────────────────────┐
-│ Tick(Tick)                              │
-│ LeadLagOffset { timestamp, correlation, │
-│                 lag_offset, lead_venue }│
-│ Signal { timestamp, symbol, side, R }   │
-└─────────────────────────────────────────┘
-
-StateStore:
-┌─────────────────────────────────────────┐
-│ db: Arc<sled::Db>                       │
-└─────────────────────────────────────────┘
-```
-
 ## Key Functions
 
 ### `TelemetryWriter::new(base_path) -> Result<Self>`
-- **Input**: Directory path for telemetry files
-- **Output**: Writer with background thread
-- **Side effects**: Spawns writer thread, creates directory
-- **Complexity**: O(1)
+- Spawns background writer thread
+- Creates output directory
 
 ### `TelemetryWriter::log_tick(tick)`
-- **Input**: Tick to log
-- **Output**: None (fire-and-forget)
-- **Side effects**: Sends to channel (may drop if full)
-- **Complexity**: O(1)
+- Fire-and-forget: sends to channel, may drop if full
 
-### `StateStore::store_position(venue, symbol, size, entry)`
-- **Input**: Position data
-- **Output**: Result
-- **Side effects**: Writes to Sled DB
-- **Complexity**: O(log n)
+### `TelemetryWriter::log_signal(symbol, side, correlation, lag)`
+- Logs signal generation for replay analysis
+
+### `StateStore::open(path) -> Result<Self>`
+- Opens Sled embedded database for crash recovery
+
+### `StateStore::flush() -> Result<()>`
+- Flushes pending writes
 
 ## Binary Format
 

@@ -1,32 +1,63 @@
-# OMS Module — Order Management System
+# OMS Module — Order Management System (v0.1.3)
 
 ## Objective
-Validate trade signals against risk limits, track cross-venue positions, and execute orders. Acts as the "gatekeeper" between signal generation and order submission.
-
-## Latency Profile
-
-| Operation | O(n) | Cycles | Notes |
-|-----------|------|--------|-------|
-| Preflight checks | O(1) | ~500 | 6 sequential checks |
-| Net delta lookup | O(1) | ~50 | Fixed-size array (was HashMap) |
-| Self-trade check | O(p) | ~100 | p = pending orders |
-| Order creation | O(1) | ~50 | Stack allocation |
-| **Total** | **O(p)** | **~700** | **~1.1µs @ 3GHz** |
+Validate trade signals against risk limits, track positions, and execute orders. Implements position cap, side-aware cooldown, and conservative fill model.
 
 ## Invariants
 
-1. **Non-bypassable checks**: All 6 preflight checks must pass before order submission
-2. **Kill switch atomic**: Uses `AtomicBool` with `SeqCst` ordering
-3. **No blocking**: OMS never blocks on DB writes (optimistic updates)
-4. **Self-trade prevention**: Cannot submit opposite side order to same venue/symbol
+1. **Non-bypassable checks**: All 6 preflight checks must pass
+2. **Kill switch atomic**: `AtomicBool` with `SeqCst` ordering
+3. **No blocking**: OMS never blocks on DB writes
+4. **Self-trade prevention**: Cannot submit opposite side to same venue/symbol
 5. **Error propagation**: Execution errors wrapped in `RiskError::ExecutionFailed`
 6. **Side-aware cooldown**: `(symbol, side)` key, 200ms between trades. Allows reversals.
 7. **Position cap**: $100 cumulative notional per `(venue, symbol)`. Direction-aware: can reduce but not add beyond cap.
 
+## Order Flow (v0.1.3)
+
+```
+TradeSignal ──▶ process_signal()
+                │
+                ├─ [1] Side-aware cooldown check (200ms per symbol+side)
+                ├─ [2] Preflight: kill switch, daily loss, signal TTL, correlation, max notional, slippage
+                ├─ [3] Self-trade prevention
+                ├─ [4] Position cap check ($100, direction-aware)
+                ├─ [5] Calculate order size (max_notional / price)
+                ├─ [6] Submit order to executor
+                └─ [7] Update cooldown + cumulative notional on success
+```
+
+## Position Cap Logic
+
+```rust
+// At $100 cap:
+if current_notional >= 100.0 {
+    // Only allow if this trade REDUCES the position
+    let would_reduce = (current_size > 0.0 && side == Sell)
+        || (current_size < 0.0 && side == Buy);
+    if !would_reduce {
+        return Err("Position cap: ...");
+    }
+}
+```
+
+## Key Functions
+
+### `process_signal(signal, price, executor) -> Result<OrderAck, RiskError>`
+- Runs all preflight checks
+- Checks side-aware cooldown
+- Checks position cap
+- Submits order
+- Updates cumulative tracking on success
+
+### `PreflightChecker::check_signal(signal, price, net_delta) -> Result<(), RiskError>`
+- 6 sequential checks: kill switch, daily loss, TTL, correlation, max notional, slippage
+- Correlation check skipped for `impulse_obi` strategy
+
 ## Memory Layout (v0.1.3)
 
 ```
-NetDelta (fixed-size array, O(1) lookup):
+NetDelta:
 ┌──────────────────────────────────────────────────────────┐
 │ positions: [[Option<Position>; 16]; 2]                   │
 │ symbol_indices: Vec<(Symbol, usize)>                     │
@@ -36,52 +67,19 @@ NetDelta (fixed-size array, O(1) lookup):
 └──────────────────────────────────────────────────────────┘
 
 OrderManagementSystem:
-┌──────────────────────────────────────────────────────┐
-│ risk_settings: RiskSettings                          │
-│ strategy_settings: StrategySettings                  │
-│ net_delta: NetDelta                                  │
-│ preflight: PreflightChecker                          │
-│ pending_orders: HashMap<String, OrderRequest>        │
-│ last_trade_per_symbol: HashMap<(String,Side), u64>   │ ← Side-aware cooldown
-│ cumulative_notional: HashMap<(String,String), f64>   │ ← Position cap
-│ cumulative_size: HashMap<(String,String), f64>       │ ← Direction tracking
-└──────────────────────────────────────────────────────┘
-```
-└─────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────┐
+│ risk_settings: RiskSettings                              │
+│ strategy_settings: StrategySettings                      │
+│ net_delta: NetDelta                                      │
+│ preflight: PreflightChecker                              │
+│ pending_orders: HashMap<String, OrderRequest>            │
+│ last_trade_per_symbol: HashMap<(String, Side), u64>      │ ← Side-aware cooldown
+│ cumulative_notional: HashMap<(String, String), f64>      │ ← Position cap
+│ cumulative_size: HashMap<(String, String), f64>          │ ← Direction tracking
+└──────────────────────────────────────────────────────────┘
 ```
 
-## Preflight Checks (Sequential)
-
-```
-1. check_kill_switch()      → Is venue kill switch active?
-2. check_daily_loss_limit() → Would this breach daily limit?
-3. check_signal_ttl()       → Is signal still fresh (<150ms)?
-4. check_correlation()      → Is R above minimum threshold?
-5. check_max_notional()     → Would order exceed max size?
-6. check_max_slippage()     → Would slippage exceed limit? (size-impact model)
-```
-
-## Key Functions
-
-### `process_signal(signal, price, executor) -> Result<OrderAck, RiskError>`
-- **Input**: Trade signal, current price, execution backend
-- **Output**: Order acknowledgment or risk error
-- **Side effects**: Creates pending order, submits to executor
-- **Complexity**: O(p) where p = pending orders
-
-### `process_fill(fill)`
-- **Input**: Fill event from exchange
-- **Output**: None
-- **Side effects**: Updates net delta, removes pending order
-- **Complexity**: O(1)
-
-### `NetDelta::update_position(fill)`
-- **Input**: Fill event
-- **Output**: None
-- **Side effects**: Updates position size, entry price, daily PnL
-- **Complexity**: O(1)
-
-## Risk Error Types (Updated v0.1.1)
+## RiskError Variants
 
 ```rust
 pub enum RiskError {
@@ -92,8 +90,6 @@ pub enum RiskError {
     SelfTrade,
     KillSwitchActive { venue },
     CorrelationTooLow { r, min },
-    ExecutionFailed(String),  // v0.1.1: wraps ExecutionError
+    ExecutionFailed(String),  // Wraps any execution error
 }
 ```
-
-**v0.1.1 Fix:** `ExecutionFailed` was added because previously execution errors were discarded and replaced with a misleading `ExceedsMaxNotional { 0.0, 0.0 }`. Now the original error message is preserved.
