@@ -240,6 +240,7 @@ mod tests {
             max_levels_consumed: 3,
             obi_persist_ms: 200,
             fill_conservatism: 0.5,
+            high_conviction_only: true,
             exit_timeout_ms: 2000,
         };
 
@@ -285,6 +286,7 @@ mod tests {
             max_levels_consumed: 3,
             obi_persist_ms: 200,
             fill_conservatism: 0.5,
+            high_conviction_only: true,
             exit_timeout_ms: 2000,
         };
 
@@ -330,6 +332,7 @@ mod tests {
             max_levels_consumed: 3,
             obi_persist_ms: 200,
             fill_conservatism: 0.5,
+            high_conviction_only: true,
             exit_timeout_ms: 2000,
         };
 
@@ -375,6 +378,7 @@ mod tests {
             max_levels_consumed: 3,
             obi_persist_ms: 200,
             fill_conservatism: 0.5,
+            high_conviction_only: true,
             exit_timeout_ms: 2000,
         };
 

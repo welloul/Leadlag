@@ -93,7 +93,7 @@ impl ObiDivergenceDetector {
     pub fn process_book(&mut self, book: &BookUpdate) -> Option<ObiSignal> {
         let venue = book.venue;
         let symbol = book.symbol.clone();
-        let timestamp_ns = now_ns();
+        let timestamp_ns = book.exchange_ts_ns;
 
         let obi = self.weighted_obi(book);
 

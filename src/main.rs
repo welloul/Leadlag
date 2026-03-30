@@ -164,6 +164,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut symbol_fills: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     let mut symbol_rejects: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
 
+    // Signal distribution tracking
+    let mut high_conviction_count = 0u64;
+    let mut medium_conviction_count = 0u64;
+
     loop {
         // Check kill switches
         if kill_switch_a.load(Ordering::SeqCst) {
@@ -413,11 +417,39 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
 
         // Process L2 order book updates from all venues.
-        // Feed real book data into simulator (per-venue books) and pipeline (OBI signals).
+        // Feed real book data into simulator (per-venue books) and pipeline (OBI + book-mid impulse).
         for (_sym, _venue, ref book_rx) in &book_receivers {
             if let Ok(book) = book_rx.try_recv() {
                 // Feed real book into simulator
                 simulator.update_book((*book).clone());
+
+                // Book-mid impulse detection (more reliable than trade price)
+                if let Some(signal) = pipeline.process_book_for_impulse(&book) {
+                    signal_count += 1;
+                    high_conviction_count += 1; // Book-mid signals are always HIGH quality
+                    info!(
+                        "BOOK_IMPULSE: {} {} on {:?} (book-mid)",
+                        signal.side, signal.symbol, signal.target_venue
+                    );
+
+                    let sig_sym = normalize_symbol(&signal.symbol);
+                    if simulator.is_venue_liquid(&sig_sym, signal.target_venue) {
+                        let exec_price = simulator.get_mid_price(&sig_sym, signal.target_venue)
+                            .unwrap_or(0.0);
+                        if exec_price > 0.0 {
+                            match oms.process_signal(&signal, exec_price, &simulator).await {
+                                Ok(ack) => {
+                                    info!("Order submitted: {}", ack.order_id);
+                                    *symbol_fills.entry(sig_sym.0.clone()).or_insert(0) += 1;
+                                }
+                                Err(e) => {
+                                    warn!("Order rejected: {}", e);
+                                    *symbol_rejects.entry(sig_sym.0.clone()).or_insert(0) += 1;
+                                }
+                            }
+                        }
+                    }
+                }
 
                 // Feed into signal pipeline for OBI detection
                 if let Some(signal) = pipeline.process_book(&book) {
@@ -434,13 +466,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         signal.lag_offset_ns,
                     );
 
-                    let price = book.best_bid().unwrap_or(0.0);
-                    match oms.process_signal(&signal, price, &simulator).await {
+                    let sig_sym = normalize_symbol(&signal.symbol);
+                    let exec_price = simulator.get_mid_price(&sig_sym, signal.target_venue)
+                        .unwrap_or_else(|| book.best_bid().unwrap_or(0.0));
+                    match oms.process_signal(&signal, exec_price, &simulator).await {
                         Ok(ack) => {
                             info!("Order submitted: {}", ack.order_id);
+                            *symbol_fills.entry(sig_sym.0.clone()).or_insert(0) += 1;
                         }
                         Err(e) => {
                             warn!("Order rejected: {}", e);
+                            *symbol_rejects.entry(sig_sym.0.clone()).or_insert(0) += 1;
                         }
                     }
                 }
@@ -465,6 +501,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 sym_stats.push(format!("{}: {}/{} ({}%)", sym.0, fills, rejects, rate));
             }
             info!("  SYMBOLS: {}", sym_stats.join(" | "));
+
+            // Signal distribution
+            let total_signals = high_conviction_count + medium_conviction_count;
+            let high_pct = if total_signals > 0 { high_conviction_count * 100 / total_signals } else { 0 };
+            let med_pct = if total_signals > 0 { medium_conviction_count * 100 / total_signals } else { 0 };
+            info!("  SIGNALS: HIGH={} ({}%) MEDIUM={} ({}%)", high_conviction_count, high_pct, medium_conviction_count, med_pct);
 
             // Time-based exit: close positions older than exit_timeout_ms
             let exit_signals = oms.check_time_exits();

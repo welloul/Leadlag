@@ -96,6 +96,43 @@ impl MidpriceTracker {
         None
     }
 
+    /// Update from book midprice (best_bid + best_ask) / 2.0.
+    /// More reliable than trade price for impulse detection.
+    #[inline(always)]
+    fn update_from_book(&mut self, mid: f64, ts_ns: u64) -> Option<f64> {
+        if !mid.is_finite() || mid <= 0.0 {
+            return None;
+        }
+
+        self.last_local_update_ns = now_ns();
+        self.current_mid = Some(mid);
+
+        if let Some(prev) = self.prev_mid {
+            if prev > 0.0
+                && prev.is_finite()
+                && ts_ns >= self.prev_timestamp_ns
+                && ts_ns - self.prev_timestamp_ns >= self.window_ns
+            {
+                let delta = (mid - prev) / prev * 10000.0;
+                self.prev_mid = Some(mid);
+                self.prev_timestamp_ns = ts_ns;
+
+                if !self.warmed_up {
+                    self.warmed_up = true;
+                    return None;
+                }
+
+                return if delta.is_finite() { Some(delta) } else { None };
+            }
+        } else {
+            self.prev_mid = Some(mid);
+            self.prev_timestamp_ns = ts_ns;
+            self.initialized = true;
+        }
+
+        None
+    }
+
     #[inline(always)]
     fn current_mid(&self) -> Option<f64> {
         self.current_mid
@@ -171,7 +208,7 @@ impl ImpulseDetector {
 
         let venue = tick.venue;
         let symbol = tick.symbol.clone();
-        let timestamp_ns = now_ns();
+        let timestamp_ns = tick.exchange_ts_ns;
 
         // Route tick to correct tracker
         let delta = match venue {
@@ -204,12 +241,6 @@ impl ImpulseDetector {
                 && delta_bps.abs() > self.impulse_threshold_bps
                 && delta_bps.abs() < 500.0
             {
-                let other_delta = match venue {
-                    VenueId::EXCHANGE_A => self.tracker_b.current_delta(),
-                    VenueId::EXCHANGE_B => self.tracker_a.current_delta(),
-                    _ => return None,
-                };
-
                 tracing::info!(
                     "Impulse detected on {:?}: {} | delta={:.4} bps | threshold={:.1} bps",
                     venue,
@@ -218,10 +249,26 @@ impl ImpulseDetector {
                     self.impulse_threshold_bps
                 );
 
-                // Lag check: other venue must have a delta AND it must be small
-                let other_is_lagging = match other_delta {
-                    Some(d) => d.is_finite() && d.abs() < self.lag_threshold_bps,
-                    None => false,
+                // Lag check: compare midprices directly instead of stale deltas
+                let source_mid = match venue {
+                    VenueId::EXCHANGE_A => self.tracker_a.current_mid(),
+                    VenueId::EXCHANGE_B => self.tracker_b.current_mid(),
+                    _ => None,
+                };
+                let target_mid = match venue {
+                    VenueId::EXCHANGE_A => self.tracker_b.current_mid(),
+                    VenueId::EXCHANGE_B => self.tracker_a.current_mid(),
+                    _ => None,
+                };
+
+                let other_is_lagging = if let (Some(src), Some(tgt)) = (source_mid, target_mid) {
+                    let spread_bps = (src - tgt) / tgt * 10_000.0;
+                    // If source moved up (positive delta), it should be ahead of target
+                    // Positive spread = source is higher = target is lagging
+                    spread_bps.abs() > self.lag_threshold_bps
+                        && (delta_bps > 0.0) == (spread_bps > 0.0)
+                } else {
+                    false
                 };
 
                 if other_is_lagging {
@@ -240,6 +287,91 @@ impl ImpulseDetector {
                         symbol,
                         impulse_magnitude_bps: delta_bps,
                         timestamp_ns,
+                    });
+                }
+            }
+        }
+
+        None
+    }
+
+    /// Process book update — feed book midprice into the correct tracker.
+    /// This is MORE reliable than trade price for impulse detection.
+    pub fn process_book(&mut self, book: &crate::eal::BookUpdate) -> Option<ImpulseSignal> {
+        let venue = book.venue;
+        let mid = match (book.best_bid(), book.best_ask()) {
+            (Some(bid), Some(ask)) if bid > 0.0 && ask > 0.0 => (bid + ask) / 2.0,
+            _ => return None,
+        };
+        let ts_ns = book.exchange_ts_ns;
+
+        // Route book to correct tracker
+        let delta = match venue {
+            VenueId::EXCHANGE_A => self.tracker_a.update_from_book(mid, ts_ns),
+            VenueId::EXCHANGE_B => self.tracker_b.update_from_book(mid, ts_ns),
+            _ => return None,
+        };
+
+        // Both trackers must be initialized AND warmed up
+        if !self.tracker_a.initialized
+            || !self.tracker_b.initialized
+            || !self.tracker_a.warmed_up
+            || !self.tracker_b.warmed_up
+        {
+            return None;
+        }
+
+        // Freshness gate
+        let now = now_ns();
+        let a_stale =
+            now.saturating_sub(self.tracker_a.last_local_update_ns) > self.venue_freshness_ns;
+        let b_stale =
+            now.saturating_sub(self.tracker_b.last_local_update_ns) > self.venue_freshness_ns;
+        if a_stale || b_stale {
+            return None;
+        }
+
+        if let Some(delta_bps) = delta {
+            if delta_bps.is_finite()
+                && delta_bps.abs() > self.impulse_threshold_bps
+                && delta_bps.abs() < 500.0
+            {
+                // Lag check: compare midprices directly
+                let source_mid = match venue {
+                    VenueId::EXCHANGE_A => self.tracker_a.current_mid(),
+                    VenueId::EXCHANGE_B => self.tracker_b.current_mid(),
+                    _ => None,
+                };
+                let target_mid = match venue {
+                    VenueId::EXCHANGE_A => self.tracker_b.current_mid(),
+                    VenueId::EXCHANGE_B => self.tracker_a.current_mid(),
+                    _ => None,
+                };
+
+                let other_is_lagging = if let (Some(src), Some(tgt)) = (source_mid, target_mid) {
+                    let spread_bps = (src - tgt) / tgt * 10_000.0;
+                    spread_bps.abs() > self.lag_threshold_bps
+                        && (delta_bps > 0.0) == (spread_bps > 0.0)
+                } else {
+                    false
+                };
+
+                if other_is_lagging {
+                    let side = if delta_bps > 0.0 {
+                        OrderSide::Buy
+                    } else {
+                        OrderSide::Sell
+                    };
+                    let target_venue = match venue {
+                        VenueId::EXCHANGE_A => VenueId::EXCHANGE_B,
+                        _ => VenueId::EXCHANGE_A,
+                    };
+                    return Some(ImpulseSignal {
+                        side,
+                        target_venue,
+                        symbol: book.symbol.clone(),
+                        impulse_magnitude_bps: delta_bps,
+                        timestamp_ns: ts_ns,
                     });
                 }
             }

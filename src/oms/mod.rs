@@ -337,17 +337,25 @@ impl OrderManagementSystem {
                     OrderSide::Sell => -size,
                 };
                 let prev_size = *self.cumulative_size.get(&cap_key).unwrap_or(&0.0);
-                *self.cumulative_notional.entry(cap_key.clone()).or_insert(0.0) += trade_notional;
+
+                // Direction-aware notional tracking
+                let would_reduce = (prev_size > 0.0 && signed_size < 0.0)
+                    || (prev_size < 0.0 && signed_size > 0.0);
+                if would_reduce {
+                    *self.cumulative_notional.entry(cap_key.clone()).or_insert(0.0) -= trade_notional;
+                } else {
+                    *self.cumulative_notional.entry(cap_key.clone()).or_insert(0.0) += trade_notional;
+                }
                 *self.cumulative_size.entry(cap_key.clone()).or_insert(0.0) += signed_size;
                 let new_size = *self.cumulative_size.get(&cap_key).unwrap_or(&0.0);
 
-                // Track position open timestamp
-                if prev_size == 0.0 && new_size != 0.0 {
-                    // Position just opened
-                    self.position_open_ts.insert(cap_key.clone(), now);
-                } else if new_size == 0.0 {
-                    // Position just closed
+                // Clean up when position fully closed
+                if new_size.abs() < 0.0001 {
+                    self.cumulative_notional.remove(&cap_key);
+                    self.cumulative_size.remove(&cap_key);
                     self.position_open_ts.remove(&cap_key);
+                } else if prev_size == 0.0 {
+                    self.position_open_ts.insert(cap_key.clone(), now);
                 }
 
                 Ok(ack)

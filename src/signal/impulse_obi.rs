@@ -54,7 +54,7 @@ pub struct CombinedSignal {
 /// for high-conviction signals.
 pub struct ImpulseObiEngine {
     /// Impulse detector
-    impulse_detector: ImpulseDetector,
+    pub(crate) impulse_detector: ImpulseDetector,
     /// OBI divergence detector
     obi_detector: ObiDivergenceDetector,
     /// Minimum cross-venue edge in bps (fees-aware: must cover taker fees + slippage)
@@ -67,6 +67,8 @@ pub struct ImpulseObiEngine {
     signal_timeout_ns: u64,
     /// Last signal timestamp
     last_signal_ns: u64,
+    /// Only emit HIGH conviction signals (skip MEDIUM)
+    high_conviction_only: bool,
 }
 
 impl ImpulseObiEngine {
@@ -76,6 +78,7 @@ impl ImpulseObiEngine {
         obi_detector: ObiDivergenceDetector,
         entry_threshold_bps: f64,
         signal_timeout_ns: u64,
+        high_conviction_only: bool,
     ) -> Self {
         Self {
             impulse_detector,
@@ -85,6 +88,7 @@ impl ImpulseObiEngine {
             pending_obi: None,
             signal_timeout_ns,
             last_signal_ns: 0,
+            high_conviction_only,
         }
     }
 
@@ -92,8 +96,8 @@ impl ImpulseObiEngine {
     /// Returns positive bps if the trade has edge, negative if not.
     fn edge_bps(&self, source_mid: f64, target_mid: f64, side: OrderSide) -> f64 {
         match side {
-            OrderSide::Buy => (target_mid - source_mid) / source_mid * 10_000.0,
-            OrderSide::Sell => (source_mid - target_mid) / source_mid * 10_000.0,
+            OrderSide::Buy => (source_mid - target_mid) / target_mid * 10_000.0,
+            OrderSide::Sell => (target_mid - source_mid) / target_mid * 10_000.0,
         }
     }
 
@@ -160,17 +164,19 @@ impl ImpulseObiEngine {
                 timestamp_ns,
             });
 
-            // MEDIUM conviction: Impulse only
-            self.last_signal_ns = timestamp_ns;
-            return Some(CombinedSignal {
-                side: impulse.side,
-                target_venue: impulse.target_venue,
-                symbol: impulse.symbol.clone(),
-                strength: SignalStrength::Medium,
-                impulse: Some(impulse),
-                obi: None,
-                timestamp_ns,
-            });
+            // MEDIUM conviction: Impulse only (skip if high_conviction_only)
+            if !self.high_conviction_only {
+                self.last_signal_ns = timestamp_ns;
+                return Some(CombinedSignal {
+                    side: impulse.side,
+                    target_venue: impulse.target_venue,
+                    symbol: impulse.symbol.clone(),
+                    strength: SignalStrength::Medium,
+                    impulse: Some(impulse),
+                    obi: None,
+                    timestamp_ns,
+                });
+            }
         }
 
         None
@@ -219,17 +225,19 @@ impl ImpulseObiEngine {
                 timestamp_ns,
             });
 
-            // MEDIUM conviction: OBI only
-            self.last_signal_ns = timestamp_ns;
-            return Some(CombinedSignal {
-                side: obi.side,
-                target_venue: obi.target_venue,
-                symbol: obi.symbol.clone(),
-                strength: SignalStrength::Medium,
-                impulse: None,
-                obi: Some(obi),
-                timestamp_ns,
-            });
+            // MEDIUM conviction: OBI only (skip if high_conviction_only)
+            if !self.high_conviction_only {
+                self.last_signal_ns = timestamp_ns;
+                return Some(CombinedSignal {
+                    side: obi.side,
+                    target_venue: obi.target_venue,
+                    symbol: obi.symbol.clone(),
+                    strength: SignalStrength::Medium,
+                    impulse: None,
+                    obi: Some(obi),
+                    timestamp_ns,
+                });
+            }
         }
 
         None
@@ -287,7 +295,8 @@ mod tests {
         let impulse_detector =
             ImpulseDetector::new(5_000_000, 5.0, 1.5, 0.001, 10_000_000, 400_000_000);
         let obi_detector = ObiDivergenceDetector::new(0.7, 0.2, 5, 0.3, 200_000_000);
-        let mut engine = ImpulseObiEngine::new(impulse_detector, obi_detector, 10.0, 10_000_000);
+        let mut engine =
+            ImpulseObiEngine::new(impulse_detector, obi_detector, 10.0, 10_000_000, false);
 
         // Initialize both trackers
         engine.process_tick(&make_tick(VenueId::EXCHANGE_A, 100.0, 1.0, 0));
@@ -316,7 +325,8 @@ mod tests {
         let impulse_detector =
             ImpulseDetector::new(5_000_000, 5.0, 1.5, 0.001, 10_000_000, 400_000_000);
         let obi_detector = ObiDivergenceDetector::new(0.7, 0.2, 5, 0.3, 200_000_000);
-        let mut engine = ImpulseObiEngine::new(impulse_detector, obi_detector, 10.0, 10_000_000);
+        let mut engine =
+            ImpulseObiEngine::new(impulse_detector, obi_detector, 10.0, 10_000_000, false);
 
         // Initialize trackers
         engine.process_tick(&make_tick(VenueId::EXCHANGE_A, 100.0, 1.0, 0));
@@ -343,7 +353,7 @@ mod tests {
         let impulse_detector =
             ImpulseDetector::new(5_000_000, 5.0, 1.5, 0.001, 10_000_000, 400_000_000);
         let obi_detector = ObiDivergenceDetector::new(0.7, 0.2, 5, 0.3, 200_000_000);
-        let engine = ImpulseObiEngine::new(impulse_detector, obi_detector, 10.0, 10_000_000);
+        let engine = ImpulseObiEngine::new(impulse_detector, obi_detector, 10.0, 10_000_000, false);
 
         // Test direction matching with PendingSignal
         let impulse_a_buy = PendingSignal {
@@ -382,7 +392,7 @@ mod tests {
         let impulse_detector =
             ImpulseDetector::new(5_000_000, 5.0, 1.5, 0.001, 10_000_000, 400_000_000);
         let obi_detector = ObiDivergenceDetector::new(0.7, 0.2, 5, 0.3, 200_000_000);
-        let engine = ImpulseObiEngine::new(impulse_detector, obi_detector, 10.0, 10_000_000);
+        let engine = ImpulseObiEngine::new(impulse_detector, obi_detector, 10.0, 10_000_000, false);
 
         // Good spread
         assert!(engine.is_spread_acceptable(100.0, 100.01));

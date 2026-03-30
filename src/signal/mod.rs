@@ -102,6 +102,7 @@ impl<const N: usize> SignalPipeline<N> {
                 obi_detector,
                 settings.entry_threshold_bps as f64,
                 signal_timeout_ns,
+                settings.high_conviction_only,
             ))
         } else {
             None
@@ -154,7 +155,7 @@ impl<const N: usize> SignalPipeline<N> {
         None
     }
 
-    /// Process book update for impulse-obi strategy
+    /// Process book update for impulse-obi strategy (OBI path)
     pub fn process_book(&mut self, book: &BookUpdate) -> Option<TradeSignal> {
         if let Some(engine) = &mut self.impulse_obi_engine {
             if let Some(signal) = engine.process_book(book) {
@@ -162,7 +163,25 @@ impl<const N: usize> SignalPipeline<N> {
                     side: signal.side,
                     target_venue: signal.target_venue,
                     symbol: signal.symbol,
-                    correlation_r: 0.0, // Not applicable for impulse-obi
+                    correlation_r: 0.0,
+                    lag_offset_ns: 0,
+                    timestamp_ns: signal.timestamp_ns,
+                });
+            }
+        }
+        None
+    }
+
+    /// Process book update for impulse detection (book-mid path).
+    /// Feed book midprice into ImpulseDetector — more reliable than trade price.
+    pub fn process_book_for_impulse(&mut self, book: &BookUpdate) -> Option<TradeSignal> {
+        if let Some(engine) = &mut self.impulse_obi_engine {
+            if let Some(signal) = engine.impulse_detector.process_book(book) {
+                return Some(TradeSignal {
+                    side: signal.side,
+                    target_venue: signal.target_venue,
+                    symbol: signal.symbol,
+                    correlation_r: 0.0,
                     lag_offset_ns: 0,
                     timestamp_ns: signal.timestamp_ns,
                 });
@@ -313,6 +332,7 @@ mod tests {
             max_levels_consumed: 3,
             obi_persist_ms: 200,
             fill_conservatism: 0.5,
+            high_conviction_only: true,
             exit_timeout_ms: 2000,
         };
 

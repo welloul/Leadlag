@@ -211,7 +211,7 @@ pub struct StrategySettings {
     pub entry_threshold_bps: u64,
 
     /// Cooldown in ms between trades for same (symbol, side) pair
-    #[validate(range(min = 50, max = 5000))]
+    #[validate(range(min = 5, max = 5000))]
     pub cooldown_ms: u64,
 
     /// Maximum number of price levels to consume per fill
@@ -225,6 +225,9 @@ pub struct StrategySettings {
     /// Fill conservatism — fraction of best level size to allow (0.5 = 50%)
     #[validate(range(min = 0.1, max = 1.0))]
     pub fill_conservatism: f64,
+
+    /// Only trade high-conviction signals
+    pub high_conviction_only: bool,
 
     /// Time-based exit timeout in ms — close positions older than this
     #[validate(range(min = 100, max = 60000))]

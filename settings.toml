@@ -61,11 +61,12 @@ obi_spike_threshold = 0.3
 # Entry logic tightening (v0.1.3)
 venue_freshness_ms = 400        # Both venues must have ticked within 400ms
 entry_threshold_bps = 8         # Minimum edge to cover fees + slippage
-cooldown_ms = 200               # Side-aware cooldown between trades
+cooldown_ms = 20                # Side-aware cooldown between trades
 max_levels_consumed = 3         # Max price levels to sweep
 obi_persist_ms = 200            # OBI must stay strong for 200ms
 fill_conservatism = 0.5         # Only fill 50% of best level size
-exit_timeout_ms = 2000          # Close positions older than 2 seconds
+high_conviction_only = true
+exit_timeout_ms = 30000         # Close positions older than 30 seconds
 
 # --- Risk Management ---
 
