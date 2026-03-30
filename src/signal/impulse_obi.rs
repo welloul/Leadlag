@@ -57,8 +57,8 @@ pub struct ImpulseObiEngine {
     impulse_detector: ImpulseDetector,
     /// OBI divergence detector
     obi_detector: ObiDivergenceDetector,
-    /// Spread filter in bps
-    max_spread_bps: f64,
+    /// Minimum cross-venue edge in bps (fees-aware: must cover taker fees + slippage)
+    entry_threshold_bps: f64,
     /// Pending impulse metadata (waiting for OBI confirmation)
     pending_impulse: Option<PendingSignal>,
     /// Pending OBI metadata (waiting for impulse confirmation)
@@ -74,17 +74,39 @@ impl ImpulseObiEngine {
     pub fn new(
         impulse_detector: ImpulseDetector,
         obi_detector: ObiDivergenceDetector,
-        max_spread_bps: f64,
+        entry_threshold_bps: f64,
         signal_timeout_ns: u64,
     ) -> Self {
         Self {
             impulse_detector,
             obi_detector,
-            max_spread_bps,
+            entry_threshold_bps,
             pending_impulse: None,
             pending_obi: None,
             signal_timeout_ns,
             last_signal_ns: 0,
+        }
+    }
+
+    /// Direction-normalized edge calculation.
+    /// Returns positive bps if the trade has edge, negative if not.
+    fn edge_bps(&self, source_mid: f64, target_mid: f64, side: OrderSide) -> f64 {
+        match side {
+            OrderSide::Buy => (target_mid - source_mid) / source_mid * 10_000.0,
+            OrderSide::Sell => (source_mid - target_mid) / source_mid * 10_000.0,
+        }
+    }
+
+    /// Check cross-venue edge before emitting signal.
+    /// Returns true if edge >= entry_threshold_bps.
+    fn has_edge(&self, signal_venue: VenueId, target_venue: VenueId, side: OrderSide) -> bool {
+        let source_mid = self.impulse_detector.current_mid(signal_venue);
+        let target_mid = self.impulse_detector.current_mid(target_venue);
+        if let (Some(src), Some(tgt)) = (source_mid, target_mid) {
+            let edge = self.edge_bps(src, tgt, side);
+            edge >= self.entry_threshold_bps
+        } else {
+            false // Can't compute edge without both mids
         }
     }
 
@@ -102,6 +124,18 @@ impl ImpulseObiEngine {
 
         // Process tick for impulse detection
         if let Some(impulse) = self.impulse_detector.process_tick(tick) {
+            // Cross-venue edge check: verify the trade has enough edge
+            if !self.has_edge(tick.venue, impulse.target_venue, impulse.side) {
+                tracing::debug!(
+                    "Impulse rejected: edge < {} bps for {} {} on {:?}",
+                    self.entry_threshold_bps,
+                    impulse.side,
+                    impulse.symbol,
+                    impulse.target_venue
+                );
+                return None;
+            }
+
             // Check if we have pending OBI that confirms direction
             if let Some(pending_obi) = self.pending_obi.take() {
                 if pending_obi.venue == impulse.target_venue && pending_obi.side == impulse.side {
@@ -113,7 +147,7 @@ impl ImpulseObiEngine {
                         symbol: impulse.symbol.clone(),
                         strength: SignalStrength::High,
                         impulse: Some(impulse),
-                        obi: None, // OBI signal consumed — metadata lost intentionally
+                        obi: None,
                         timestamp_ns,
                     });
                 }
@@ -156,6 +190,11 @@ impl ImpulseObiEngine {
 
         // Process book for OBI detection
         if let Some(obi) = self.obi_detector.process_book(book) {
+            // Cross-venue edge check
+            if !self.has_edge(book.venue, obi.target_venue, obi.side) {
+                return None;
+            }
+
             // Check if we have pending impulse that confirms direction
             if let Some(pending_impulse) = self.pending_impulse.take() {
                 if pending_impulse.venue == obi.target_venue && pending_impulse.side == obi.side {
@@ -166,7 +205,7 @@ impl ImpulseObiEngine {
                         target_venue: obi.target_venue,
                         symbol: obi.symbol.clone(),
                         strength: SignalStrength::High,
-                        impulse: None, // Impulse signal consumed — metadata lost intentionally
+                        impulse: None,
                         obi: Some(obi),
                         timestamp_ns,
                     });
@@ -202,7 +241,7 @@ impl ImpulseObiEngine {
             return false;
         }
         let spread_bps = (ask - bid) / bid * 10000.0;
-        spread_bps <= self.max_spread_bps
+        spread_bps <= self.entry_threshold_bps * 2.0 // allow 2x entry threshold as max spread
     }
 }
 
@@ -245,8 +284,9 @@ mod tests {
 
     #[test]
     fn test_impulse_only_medium_conviction() {
-        let impulse_detector = ImpulseDetector::new(5_000_000, 5.0, 1.5, 0.001, 10_000_000);
-        let obi_detector = ObiDivergenceDetector::new(0.7, 0.2, 5, 0.3);
+        let impulse_detector =
+            ImpulseDetector::new(5_000_000, 5.0, 1.5, 0.001, 10_000_000, 400_000_000);
+        let obi_detector = ObiDivergenceDetector::new(0.7, 0.2, 5, 0.3, 200_000_000);
         let mut engine = ImpulseObiEngine::new(impulse_detector, obi_detector, 10.0, 10_000_000);
 
         // Initialize both trackers
@@ -273,8 +313,9 @@ mod tests {
 
     #[test]
     fn test_timeout_clears_pending_signals() {
-        let impulse_detector = ImpulseDetector::new(5_000_000, 5.0, 1.5, 0.001, 10_000_000);
-        let obi_detector = ObiDivergenceDetector::new(0.7, 0.2, 5, 0.3);
+        let impulse_detector =
+            ImpulseDetector::new(5_000_000, 5.0, 1.5, 0.001, 10_000_000, 400_000_000);
+        let obi_detector = ObiDivergenceDetector::new(0.7, 0.2, 5, 0.3, 200_000_000);
         let mut engine = ImpulseObiEngine::new(impulse_detector, obi_detector, 10.0, 10_000_000);
 
         // Initialize trackers
@@ -299,8 +340,9 @@ mod tests {
 
     #[test]
     fn test_direction_matching_logic() {
-        let impulse_detector = ImpulseDetector::new(5_000_000, 5.0, 1.5, 0.001, 10_000_000);
-        let obi_detector = ObiDivergenceDetector::new(0.7, 0.2, 5, 0.3);
+        let impulse_detector =
+            ImpulseDetector::new(5_000_000, 5.0, 1.5, 0.001, 10_000_000, 400_000_000);
+        let obi_detector = ObiDivergenceDetector::new(0.7, 0.2, 5, 0.3, 200_000_000);
         let engine = ImpulseObiEngine::new(impulse_detector, obi_detector, 10.0, 10_000_000);
 
         // Test direction matching with PendingSignal
@@ -337,8 +379,9 @@ mod tests {
 
     #[test]
     fn test_spread_filter() {
-        let impulse_detector = ImpulseDetector::new(5_000_000, 5.0, 1.5, 0.001, 10_000_000);
-        let obi_detector = ObiDivergenceDetector::new(0.7, 0.2, 5, 0.3);
+        let impulse_detector =
+            ImpulseDetector::new(5_000_000, 5.0, 1.5, 0.001, 10_000_000, 400_000_000);
+        let obi_detector = ObiDivergenceDetector::new(0.7, 0.2, 5, 0.3, 200_000_000);
         let engine = ImpulseObiEngine::new(impulse_detector, obi_detector, 10.0, 10_000_000);
 
         // Good spread

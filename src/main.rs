@@ -160,6 +160,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut tick_count_b = 0u64;
     let mut last_heartbeat = std::time::Instant::now();
 
+    // Per-symbol performance tracking
+    let mut symbol_fills: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    let mut symbol_rejects: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+
     loop {
         // Check kill switches
         if kill_switch_a.load(Ordering::SeqCst) {
@@ -243,26 +247,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match (has_book, staleness_ms) {
                     (false, _) => {
                         tracing::debug!("SKIP: no book for {:?} {}", signal.target_venue, sig_sym);
+                        *symbol_rejects.entry(sig_sym.0.clone()).or_insert(0) += 1;
                     }
-                    (true, Some(ms)) if ms > 2000.0 => {
-                        tracing::debug!("SKIP: book {:.0}ms stale for {:?} {}", ms, signal.target_venue, sig_sym);
+                    (true, Some(ms)) if ms > 400.0 => {
+                        tracing::debug!("SKIP: book {:.0}ms stale (>400ms) for {:?} {}", ms, signal.target_venue, sig_sym);
+                        *symbol_rejects.entry(sig_sym.0.clone()).or_insert(0) += 1;
                     }
                     _ => {
-                        // Fresh or stale <2s — trade it
-                        if let Some(ms) = staleness_ms {
-                            if ms > 100.0 {
-                                info!("STALE_BOOK ({:.0}ms): {} {} on {:?}", ms, signal.side, sig_sym, signal.target_venue);
-                            }
-                        }
-                // Use target venue's price for risk checks and execution
-                let exec_price = simulator.get_mid_price(&sig_sym, signal.target_venue)
-                    .unwrap_or(tick.price);
+                        let exec_price = simulator.get_mid_price(&sig_sym, signal.target_venue)
+                            .unwrap_or(tick.price);
                         match oms.process_signal(&signal, exec_price, &simulator).await {
                             Ok(ack) => {
                                 info!("Order submitted: {}", ack.order_id);
+                                *symbol_fills.entry(sig_sym.0.clone()).or_insert(0) += 1;
                             }
                             Err(e) => {
                                 warn!("Order rejected: {}", e);
+                                *symbol_rejects.entry(sig_sym.0.clone()).or_insert(0) += 1;
                             }
                         }
                     }
@@ -387,24 +388,23 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 match (has_book, staleness_ms) {
                     (false, _) => {
                         tracing::debug!("SKIP: no book for {:?} {}", signal.target_venue, sig_sym);
+                        *symbol_rejects.entry(sig_sym.0.clone()).or_insert(0) += 1;
                     }
-                    (true, Some(ms)) if ms > 2000.0 => {
-                        tracing::debug!("SKIP: book {:.0}ms stale for {:?} {}", ms, signal.target_venue, sig_sym);
+                    (true, Some(ms)) if ms > 400.0 => {
+                        tracing::debug!("SKIP: book {:.0}ms stale (>400ms) for {:?} {}", ms, signal.target_venue, sig_sym);
+                        *symbol_rejects.entry(sig_sym.0.clone()).or_insert(0) += 1;
                     }
                     _ => {
-                        if let Some(ms) = staleness_ms {
-                            if ms > 100.0 {
-                                info!("STALE_BOOK ({:.0}ms): {} {} on {:?}", ms, signal.side, sig_sym, signal.target_venue);
-                            }
-                        }
                         let exec_price = simulator.get_mid_price(&sig_sym, signal.target_venue)
                             .unwrap_or(tick.price);
                         match oms.process_signal(&signal, exec_price, &simulator).await {
                             Ok(ack) => {
                                 info!("Order submitted: {}", ack.order_id);
+                                *symbol_fills.entry(sig_sym.0.clone()).or_insert(0) += 1;
                             }
                             Err(e) => {
                                 warn!("Order rejected: {}", e);
+                                *symbol_rejects.entry(sig_sym.0.clone()).or_insert(0) += 1;
                             }
                         }
                     }
@@ -454,6 +454,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "HEARTBEAT | A ticks: {} | B ticks: {} | total: {} | signals: {} | {}",
                 tick_count_a, tick_count_b, tick_count, signal_count, sim_metrics.summary()
             );
+
+            // Per-symbol performance tracking
+            let mut sym_stats: Vec<String> = Vec::new();
+            for sym in &symbols {
+                let fills = symbol_fills.get(&sym.0).unwrap_or(&0);
+                let rejects = symbol_rejects.get(&sym.0).unwrap_or(&0);
+                let total = fills + rejects;
+                let rate = if total > 0 { *fills * 100 / total } else { 0 };
+                sym_stats.push(format!("{}: {}/{} ({}%)", sym.0, fills, rejects, rate));
+            }
+            info!("  SYMBOLS: {}", sym_stats.join(" | "));
+
             last_heartbeat = std::time::Instant::now();
         }
 

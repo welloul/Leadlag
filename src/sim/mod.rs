@@ -300,9 +300,21 @@ impl PaperSimulator {
                 format!("No book for {} on {:?}", order.symbol, order.venue)
             ))?;
 
+        // Conservative fill: only fill 50% of best level size.
+        // Real books shift during latency — assume we can only capture half.
+        let best_size = match order.side {
+            OrderSide::Buy => matcher.best_ask_size(),
+            OrderSide::Sell => matcher.best_bid_size(),
+        };
+        let allowed_size = if best_size > 0.0 {
+            order.size.min(best_size * 0.5)
+        } else {
+            order.size
+        };
+
         let (filled_size, avg_price, slippage_bps) = matcher.match_order(
             order.side,
-            order.size,
+            allowed_size,
             order.price,
         )?;
 

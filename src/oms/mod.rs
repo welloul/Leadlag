@@ -186,20 +186,16 @@ impl NetDelta {
 ///
 /// Orchestrates order execution with risk pre-flight checks.
 pub struct OrderManagementSystem {
-    /// Risk settings.
     risk_settings: RiskSettings,
-    /// Strategy settings.
     strategy_settings: StrategySettings,
-    /// Net delta tracker.
     net_delta: NetDelta,
-    /// Preflight checker.
     preflight: PreflightChecker,
-    /// Pending orders (for self-trade prevention).
     pending_orders: HashMap<String, OrderRequest>,
+    /// Side-aware cooldown: last trade timestamp per (symbol, side)
+    last_trade_per_symbol: HashMap<(String, OrderSide), u64>,
 }
 
 impl OrderManagementSystem {
-    /// Create a new OMS.
     pub fn new(risk_settings: RiskSettings, strategy_settings: StrategySettings) -> Self {
         let net_delta = NetDelta::new(risk_settings.max_drawdown_daily);
         let preflight = PreflightChecker::new(risk_settings.clone(), strategy_settings.clone());
@@ -210,6 +206,7 @@ impl OrderManagementSystem {
             net_delta,
             preflight,
             pending_orders: HashMap::new(),
+            last_trade_per_symbol: HashMap::new(),
         }
     }
 
@@ -225,6 +222,23 @@ impl OrderManagementSystem {
         current_price: f64,
         executor: &dyn OrderExecution,
     ) -> Result<OrderAck, RiskError> {
+        // Side-aware cooldown: don't re-trade same (symbol, side) within cooldown window
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        let cooldown_ns = self.strategy_settings.cooldown_ms * 1_000_000;
+        let cooldown_key = (signal.symbol.0.clone(), signal.side);
+
+        if let Some(last) = self.last_trade_per_symbol.get(&cooldown_key) {
+            if now - *last < cooldown_ns {
+                return Err(RiskError::ExecutionFailed(format!(
+                    "Cooldown: {:.0}ms since last {:?} {}",
+                    (now - *last) as f64 / 1e6, signal.side, signal.symbol
+                )));
+            }
+        }
+
         // Run pre-flight checks
         self.preflight.check_signal(signal, current_price, &self.net_delta)?;
 
@@ -253,7 +267,11 @@ impl OrderManagementSystem {
 
         // Submit order
         match executor.submit_order(&order).await {
-            Ok(ack) => Ok(ack),
+            Ok(ack) => {
+                // Update side-aware cooldown
+                self.last_trade_per_symbol.insert(cooldown_key, now);
+                Ok(ack)
+            }
             Err(e) => {
                 // Remove pending order on failure
                 self.pending_orders.remove(&order.client_order_id);

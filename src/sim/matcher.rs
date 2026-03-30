@@ -115,6 +115,16 @@ impl OrderBookMatcher {
         self.asks.first().map(|l| l.price)
     }
 
+    /// Get the best bid size.
+    pub fn best_bid_size(&self) -> f64 {
+        self.bids.first().map(|l| l.size).unwrap_or(0.0)
+    }
+
+    /// Get the best ask size.
+    pub fn best_ask_size(&self) -> f64 {
+        self.asks.first().map(|l| l.size).unwrap_or(0.0)
+    }
+
     /// Get the mid price.
     pub fn mid_price(&self) -> Option<f64> {
         match (self.best_bid(), self.best_ask()) {

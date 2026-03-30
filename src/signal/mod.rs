@@ -81,23 +81,26 @@ impl<const N: usize> SignalPipeline<N> {
         let impulse_obi_engine = if active_strategy == ActiveStrategy::ImpulseObi {
             let window_ns = settings.impulse_window_ms * 1_000_000;
             let signal_timeout_ns = settings.signal_timeout_ms * 1_000_000;
+            let venue_freshness_ns = settings.venue_freshness_ms * 1_000_000;
             let impulse_detector = ImpulseDetector::new(
                 window_ns,
                 settings.impulse_threshold_bps as f64,
                 settings.lag_threshold_bps as f64,
                 settings.min_trade_size_filter,
                 signal_timeout_ns,
+                venue_freshness_ns,
             );
             let obi_detector = ObiDivergenceDetector::new(
                 settings.obi_strong_threshold,
                 settings.obi_neutral_threshold,
                 settings.obi_depth,
                 settings.obi_spike_threshold,
+                settings.obi_persist_ms * 1_000_000,
             );
             Some(ImpulseObiEngine::new(
                 impulse_detector,
                 obi_detector,
-                settings.spread_filter_bps as f64,
+                settings.entry_threshold_bps as f64,
                 signal_timeout_ns,
             ))
         } else {
@@ -304,6 +307,12 @@ mod tests {
             obi_neutral_threshold: 0.2,
             obi_depth: 5,
             obi_spike_threshold: 0.3,
+            venue_freshness_ms: 400,
+            entry_threshold_bps: 8,
+            cooldown_ms: 200,
+            max_levels_consumed: 3,
+            obi_persist_ms: 200,
+            fill_conservatism: 0.5,
         };
 
         let pipeline = SignalPipeline::<256>::new(settings);

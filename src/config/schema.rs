@@ -141,7 +141,6 @@ pub struct StrategySettings {
     pub symbols: Vec<String>,
 
     // --- Correlation-Hysteresis settings ---
-
     /// Number of ticks in the sliding window (must be power of 2)
     #[validate(range(min = 16, max = 4096))]
     pub window_size_ticks: usize,
@@ -162,7 +161,6 @@ pub struct StrategySettings {
     pub obi_weight: f64,
 
     // --- Impulse-OBI settings ---
-
     /// Price move threshold in bps to detect impulse (3-10 bps)
     #[validate(range(min = 1, max = 100))]
     pub impulse_threshold_bps: u64,
@@ -202,6 +200,31 @@ pub struct StrategySettings {
     /// OBI spike threshold for liquidity shift detection
     #[validate(range(min = 0.01, max = 1.0))]
     pub obi_spike_threshold: f64,
+
+    // --- Entry logic tightening (v0.1.3) ---
+    /// Venue freshness threshold in ms — both venues must have ticked within this window
+    #[validate(range(min = 50, max = 2000))]
+    pub venue_freshness_ms: u64,
+
+    /// Minimum cross-venue edge in bps to enter a trade (should cover fees + slippage)
+    #[validate(range(min = 2, max = 50))]
+    pub entry_threshold_bps: u64,
+
+    /// Cooldown in ms between trades for same (symbol, side) pair
+    #[validate(range(min = 50, max = 5000))]
+    pub cooldown_ms: u64,
+
+    /// Maximum number of price levels to consume per fill
+    #[validate(range(min = 1, max = 10))]
+    pub max_levels_consumed: usize,
+
+    /// OBI persistence duration in ms — OBI must stay strong for this long
+    #[validate(range(min = 50, max = 2000))]
+    pub obi_persist_ms: u64,
+
+    /// Fill conservatism — fraction of best level size to allow (0.5 = 50%)
+    #[validate(range(min = 0.1, max = 1.0))]
+    pub fill_conservatism: f64,
 }
 
 // ============================================================================

@@ -38,6 +38,12 @@ fn test_signal_pipeline_generates_signal_on_correlation() {
         obi_neutral_threshold: 0.2,
         obi_depth: 5,
         obi_spike_threshold: 0.3,
+        venue_freshness_ms: 400,
+        entry_threshold_bps: 8,
+        cooldown_ms: 200,
+        max_levels_consumed: 3,
+        obi_persist_ms: 200,
+        fill_conservatism: 0.5,
     };
 
     let mut pipeline = SignalPipeline::<256>::new(settings);
@@ -135,6 +141,12 @@ fn test_signal_pipeline_no_signal_on_uncorrelated_data() {
         obi_neutral_threshold: 0.2,
         obi_depth: 5,
         obi_spike_threshold: 0.3,
+        venue_freshness_ms: 400,
+        entry_threshold_bps: 8,
+        cooldown_ms: 200,
+        max_levels_consumed: 3,
+        obi_persist_ms: 200,
+        fill_conservatism: 0.5,
     };
 
     let mut pipeline = SignalPipeline::<256>::new(settings);
