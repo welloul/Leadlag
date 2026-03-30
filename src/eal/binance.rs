@@ -359,17 +359,81 @@ impl BinanceExchange {
         let sym_name = symbol.0.clone();
         let venue = VenueId::EXCHANGE_A;
 
+        // Buffer for diffs during re-sync
+        let mut diff_buffer: Vec<BinanceDepthUpdate> = Vec::new();
+        let mut resyncing = false;
+
         loop {
             tokio::select! {
                 msg = read.next() => {
                     match msg {
                         Some(Ok(Message::Text(text))) => {
                             if let Ok(diff) = serde_json::from_str::<BinanceDepthUpdate>(&text) {
-                                if local_book.apply_diff(&diff) {
+                                if resyncing {
+                                    // Buffer diffs until re-sync completes
+                                    diff_buffer.push(diff);
+                                } else if local_book.apply_diff(&diff) {
                                     let book_update = local_book.to_book_update(symbol, venue);
                                     let _ = sender.send(Arc::new(book_update));
                                 } else if !local_book.synced {
-                                    tracing::warn!("Binance book gap for {} — needs re-sync", sym_name);
+                                    // Gap detected — start re-sync
+                                    tracing::warn!(
+                                        "Binance book gap for {} — starting re-sync (last_id={})",
+                                        sym_name, local_book.last_update_id
+                                    );
+                                    resyncing = true;
+                                    diff_buffer.clear();
+                                    diff_buffer.push(diff);
+
+                                    // Re-fetch REST snapshot
+                                    match reqwest::get(&snapshot_url).await {
+                                        Ok(resp) => match resp.json::<BinanceDepthSnapshot>().await {
+                                            Ok(new_snapshot) => {
+                                                tracing::info!(
+                                                    "Binance re-sync snapshot for {} (id={})",
+                                                    sym_name, new_snapshot.last_update_id
+                                                );
+
+                                                // Apply snapshot
+                                                local_book.apply_snapshot(&new_snapshot);
+
+                                                // Replay buffered diffs: drop those with u <= lastUpdate_id
+                                                let last_id = local_book.last_update_id;
+                                                let valid_diffs: Vec<_> = diff_buffer
+                                                    .drain(..)
+                                                    .filter(|d| d.final_update_id > last_id)
+                                                    .collect();
+
+                                                for d in &valid_diffs {
+                                                    local_book.apply_diff(d);
+                                                }
+
+                                                tracing::info!(
+                                                    "Binance re-sync complete for {}: snapshot_id={}, replayed {}/{} diffs",
+                                                    sym_name, last_id, valid_diffs.len(), valid_diffs.len() + diff_buffer.len()
+                                                );
+
+                                                let book_update = local_book.to_book_update(symbol, venue);
+                                                let _ = sender.send(Arc::new(book_update));
+
+                                                resyncing = false;
+                                            }
+                                            Err(e) => {
+                                                tracing::error!(
+                                                    "Binance re-sync parse failed for {}: {}",
+                                                    sym_name, e
+                                                );
+                                                // Keep buffering, will retry on next diff
+                                            }
+                                        },
+                                        Err(e) => {
+                                            tracing::error!(
+                                                "Binance re-sync fetch failed for {}: {}",
+                                                sym_name, e
+                                            );
+                                            // Keep buffering, will retry on next diff
+                                        }
+                                    }
                                 }
                             }
                         }
