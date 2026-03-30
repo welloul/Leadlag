@@ -225,7 +225,9 @@ pub struct OrderManagementSystem {
     /// This is used for position cap BEFORE fills arrive
     cumulative_notional: HashMap<(String, String), f64>,  // (venue_str, symbol) → notional
     /// Signed position size per (venue, symbol) for direction-aware checks
-    cumulative_size: HashMap<(String, String), f64>,       // (venue_str, symbol) → signed size
+    cumulative_size: HashMap<(String, String), f64>,
+    /// Position open timestamps per (venue, symbol) for time-based exit
+    position_open_ts: HashMap<(String, String), u64>,
 }
 
 impl OrderManagementSystem {
@@ -242,6 +244,7 @@ impl OrderManagementSystem {
             last_trade_per_symbol: HashMap::new(),
             cumulative_notional: HashMap::new(),
             cumulative_size: HashMap::new(),
+            position_open_ts: HashMap::new(),
         }
     }
 
@@ -333,8 +336,19 @@ impl OrderManagementSystem {
                     OrderSide::Buy => size,
                     OrderSide::Sell => -size,
                 };
+                let prev_size = *self.cumulative_size.get(&cap_key).unwrap_or(&0.0);
                 *self.cumulative_notional.entry(cap_key.clone()).or_insert(0.0) += trade_notional;
-                *self.cumulative_size.entry(cap_key).or_insert(0.0) += signed_size;
+                *self.cumulative_size.entry(cap_key.clone()).or_insert(0.0) += signed_size;
+                let new_size = *self.cumulative_size.get(&cap_key).unwrap_or(&0.0);
+
+                // Track position open timestamp
+                if prev_size == 0.0 && new_size != 0.0 {
+                    // Position just opened
+                    self.position_open_ts.insert(cap_key.clone(), now);
+                } else if new_size == 0.0 {
+                    // Position just closed
+                    self.position_open_ts.remove(&cap_key);
+                }
 
                 Ok(ack)
             }
@@ -378,6 +392,91 @@ impl OrderManagementSystem {
     /// Get mutable net delta tracker.
     pub fn net_delta_mut(&mut self) -> &mut NetDelta {
         &mut self.net_delta
+    }
+
+    /// Check all positions for time-based exits.
+    /// Returns exit TradeSignals for positions older than exit_timeout_ms.
+    pub fn check_time_exits(&self) -> Vec<TradeSignal> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        let exit_timeout_ns = self.strategy_settings.exit_timeout_ms * 1_000_000;
+
+        let mut exits = Vec::new();
+
+        for ((venue_str, sym_str), &open_ts) in &self.position_open_ts {
+            let age_ns = now.saturating_sub(open_ts);
+            if age_ns > exit_timeout_ns {
+                let size = *self.cumulative_size.get(&(venue_str.clone(), sym_str.clone())).unwrap_or(&0.0);
+                if size == 0.0 {
+                    continue;
+                }
+
+                let exit_side = if size > 0.0 { OrderSide::Sell } else { OrderSide::Buy };
+
+                let venue = if venue_str == "VenueId(0)" {
+                    VenueId::EXCHANGE_A
+                } else {
+                    VenueId::EXCHANGE_B
+                };
+
+                tracing::info!(
+                    "TIME EXIT: {} on {:?} held for {:.0}ms (timeout={}ms)",
+                    sym_str, venue,
+                    age_ns as f64 / 1e6,
+                    self.strategy_settings.exit_timeout_ms
+                );
+
+                exits.push(TradeSignal {
+                    symbol: Symbol::new(sym_str),
+                    side: exit_side,
+                    target_venue: venue,
+                    correlation_r: 1.0,
+                    lag_offset_ns: 0,
+                    timestamp_ns: now,
+                });
+            }
+        }
+
+        exits
+    }
+
+    /// Process an exit signal — bypasses cooldown, self-trade, and position cap.
+    pub async fn process_exit_signal(
+        &mut self,
+        signal: &TradeSignal,
+        current_price: f64,
+        executor: &dyn OrderExecution,
+    ) -> Result<OrderAck, RiskError> {
+        let cap_key = (format!("{:?}", signal.target_venue), signal.symbol.0.clone());
+        let current_size = *self.cumulative_size.get(&cap_key).unwrap_or(&0.0);
+
+        if current_size == 0.0 {
+            return Err(RiskError::ExecutionFailed("No position to exit".to_string()));
+        }
+
+        let exit_size = current_size.abs();
+
+        let order = OrderRequest {
+            venue: signal.target_venue,
+            symbol: signal.symbol.clone(),
+            side: signal.side,
+            order_type: crate::eal::OrderType::IOC,
+            size: exit_size,
+            price: None,
+            client_order_id: uuid::Uuid::new_v4().to_string(),
+        };
+
+        match executor.submit_order(&order).await {
+            Ok(ack) => {
+                *self.cumulative_size.entry(cap_key.clone()).or_insert(0.0) = 0.0;
+                *self.cumulative_notional.entry(cap_key.clone()).or_insert(0.0) = 0.0;
+                self.position_open_ts.remove(&cap_key);
+                Ok(ack)
+            }
+            Err(e) => Err(RiskError::ExecutionFailed(e.to_string())),
+        }
     }
 }
 

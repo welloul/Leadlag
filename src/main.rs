@@ -466,6 +466,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             info!("  SYMBOLS: {}", sym_stats.join(" | "));
 
+            // Time-based exit: close positions older than exit_timeout_ms
+            let exit_signals = oms.check_time_exits();
+            for exit_signal in exit_signals {
+                let exec_price = simulator.get_mid_price(&exit_signal.symbol, exit_signal.target_venue)
+                    .unwrap_or(0.0);
+                if exec_price > 0.0 {
+                    match oms.process_exit_signal(&exit_signal, exec_price, &simulator).await {
+                        Ok(ack) => {
+                            info!("TIME EXIT submitted: {} {} on {:?} @ ${:.4}",
+                                exit_signal.side, exit_signal.symbol, exit_signal.target_venue, exec_price);
+                        }
+                        Err(e) => {
+                            warn!("TIME EXIT rejected: {}", e);
+                        }
+                    }
+                }
+            }
+
             last_heartbeat = std::time::Instant::now();
         }
 

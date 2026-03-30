@@ -225,6 +225,10 @@ pub struct StrategySettings {
     /// Fill conservatism — fraction of best level size to allow (0.5 = 50%)
     #[validate(range(min = 0.1, max = 1.0))]
     pub fill_conservatism: f64,
+
+    /// Time-based exit timeout in ms — close positions older than this
+    #[validate(range(min = 100, max = 60000))]
+    pub exit_timeout_ms: u64,
 }
 
 // ============================================================================

@@ -48,6 +48,7 @@ fn make_strategy_settings() -> StrategySettings {
         max_levels_consumed: 3,
         obi_persist_ms: 200,
         fill_conservatism: 0.5,
+            exit_timeout_ms: 2000,
     }
 }
 
@@ -89,6 +90,7 @@ async fn test_tick_to_signal_to_order_flow() {
         max_levels_consumed: 3,
         obi_persist_ms: 200,
         fill_conservatism: 0.5,
+            exit_timeout_ms: 2000,
     };
     let risk_settings = RiskSettings {
         max_notional_usd: 5000.0,
@@ -217,6 +219,7 @@ async fn test_risk_check_rejection() {
         max_levels_consumed: 3,
         obi_persist_ms: 200,
         fill_conservatism: 0.5,
+            exit_timeout_ms: 2000,
     };
 
     let risk_settings = make_risk_settings();

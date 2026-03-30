@@ -44,6 +44,7 @@ fn test_signal_pipeline_generates_signal_on_correlation() {
         max_levels_consumed: 3,
         obi_persist_ms: 200,
         fill_conservatism: 0.5,
+            exit_timeout_ms: 2000,
     };
 
     let mut pipeline = SignalPipeline::<256>::new(settings);
@@ -147,6 +148,7 @@ fn test_signal_pipeline_no_signal_on_uncorrelated_data() {
         max_levels_consumed: 3,
         obi_persist_ms: 200,
         fill_conservatism: 0.5,
+            exit_timeout_ms: 2000,
     };
 
     let mut pipeline = SignalPipeline::<256>::new(settings);

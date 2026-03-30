@@ -240,6 +240,7 @@ mod tests {
             max_levels_consumed: 3,
             obi_persist_ms: 200,
             fill_conservatism: 0.5,
+            exit_timeout_ms: 2000,
         };
 
         let checker = PreflightChecker::new(risk_settings, strategy_settings);
@@ -284,6 +285,7 @@ mod tests {
             max_levels_consumed: 3,
             obi_persist_ms: 200,
             fill_conservatism: 0.5,
+            exit_timeout_ms: 2000,
         };
 
         let checker = PreflightChecker::new(risk_settings, strategy_settings);
@@ -328,6 +330,7 @@ mod tests {
             max_levels_consumed: 3,
             obi_persist_ms: 200,
             fill_conservatism: 0.5,
+            exit_timeout_ms: 2000,
         };
 
         let checker = PreflightChecker::new(risk_settings, strategy_settings);
@@ -372,6 +375,7 @@ mod tests {
             max_levels_consumed: 3,
             obi_persist_ms: 200,
             fill_conservatism: 0.5,
+            exit_timeout_ms: 2000,
         };
 
         let checker = PreflightChecker::new(risk_settings, strategy_settings);
