@@ -19,29 +19,34 @@ Validate trade signals against risk limits, track cross-venue positions, and exe
 2. **Kill switch atomic**: Uses `AtomicBool` with `SeqCst` ordering
 3. **No blocking**: OMS never blocks on DB writes (optimistic updates)
 4. **Self-trade prevention**: Cannot submit opposite side order to same venue/symbol
-5. **Error propagation**: Execution errors wrapped in `RiskError::ExecutionFailed` — never discarded
+5. **Error propagation**: Execution errors wrapped in `RiskError::ExecutionFailed`
+6. **Side-aware cooldown**: `(symbol, side)` key, 200ms between trades. Allows reversals.
+7. **Position cap**: $100 cumulative notional per `(venue, symbol)`. Direction-aware: can reduce but not add beyond cap.
 
-## Memory Layout (Updated v0.1.1)
+## Memory Layout (v0.1.3)
 
 ```
 NetDelta (fixed-size array, O(1) lookup):
 ┌──────────────────────────────────────────────────────────┐
-│ positions: [[Option<Position>; 16]; 2]                   │ ← Fixed-size array
-│   [venue_idx][symbol_idx] → Option<Position>             │
-│ symbol_indices: Vec<(Symbol, usize)>                     │ ← Symbol → index map
+│ positions: [[Option<Position>; 16]; 2]                   │
+│ symbol_indices: Vec<(Symbol, usize)>                     │
 │ daily_realized_pnl: f64                                  │
 │ daily_loss_limit: f64                                    │
 │ kill_switches: [Option<Arc<AtomicBool>>; 2]              │
 └──────────────────────────────────────────────────────────┘
-Previously: HashMap<(VenueId, Symbol), Position> — O(n) lookup
 
 OrderManagementSystem:
-┌─────────────────────────────────────────┐
-│ risk_settings: RiskSettings             │
-│ strategy_settings: StrategySettings     │
-│ net_delta: NetDelta                     │
-│ preflight: PreflightChecker             │
-│ pending_orders: HashMap<String,OrderRequest>│
+┌──────────────────────────────────────────────────────┐
+│ risk_settings: RiskSettings                          │
+│ strategy_settings: StrategySettings                  │
+│ net_delta: NetDelta                                  │
+│ preflight: PreflightChecker                          │
+│ pending_orders: HashMap<String, OrderRequest>        │
+│ last_trade_per_symbol: HashMap<(String,Side), u64>   │ ← Side-aware cooldown
+│ cumulative_notional: HashMap<(String,String), f64>   │ ← Position cap
+│ cumulative_size: HashMap<(String,String), f64>       │ ← Direction tracking
+└──────────────────────────────────────────────────────┘
+```
 └─────────────────────────────────────────┘
 ```
 

@@ -15,9 +15,13 @@ Provide a unified trait-based interface for exchange connectivity. Both live exc
 ## Invariants
 
 1. **Trait polymorphism**: All exchanges implement `MarketData` + `OrderExecution`
-2. **Arc-wrapped ticks**: `Arc<Tick>` for zero-copy fan-out to multiple consumers
+2. **Arc-wrapped data**: `Arc<Tick>` and `Arc<BookUpdate>` for zero-copy fan-out
 3. **Bounded channels**: All channels use `bounded(1024)` for backpressure
 4. **try_send only**: Never block the WebSocket task
+5. **Real L2 books**: Binance `@depth@100ms` diff stream, Hyperliquid `l2Book` snapshots
+6. **Local order book**: `LocalOrderBook` with BTreeMap state for Binance diff stream reconciliation
+7. **Symbol normalization**: `ZECUSDT` → `ZEC` for cross-venue keying
+8. **Subscriptions per symbol**: Binance creates separate WS per symbol. Hyperliquid subscribes multiple symbols on one WS.
 
 ## Memory Layout
 

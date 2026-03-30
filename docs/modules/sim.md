@@ -14,12 +14,15 @@ Simulate realistic exchange behavior for paper trading. Maintains separate order
 
 ## Invariants
 
-1. **Per-venue books**: Matchers keyed by `(Symbol, VenueId)`. Each venue has independent L2 books. Reverting to `Symbol`-only keying destroys cross-venue execution correctness.
-2. **No silent matcher creation**: `simulate_fill` uses `get_mut()` — never `entry().or_insert_with()`. If a venue has no book, return an explicit error.
-3. **Realistic fills**: Only fills against actual L2 liquidity
+1. **Per-venue books**: Matchers keyed by `(Symbol, VenueId)`. Each venue has independent L2 books.
+2. **No silent matcher creation**: `simulate_fill` uses `get_mut()`.
+3. **Conservative fill**: Only fills 50% of best level size. Real books shift during latency.
 4. **VWAP calculation**: Multi-level fills use volume-weighted average price
 5. **Fee accuracy**: Uses exact exchange fee tiers
 6. **Latency simulation**: Configurable RTT delay before fill
+7. **Staleness tracking**: Per-venue `last_update_ns` and `has_real_data` flags
+8. **Fill provenance**: Each fill tagged as `Fresh` or `Stale` for metrics
+9. **No cross-venue fallback**: `get_mid_price()` returns `None` if target venue has no book — never falls back to other venue
 
 ## Per-Venue Spread Model
 

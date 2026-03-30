@@ -33,11 +33,13 @@ Process incoming ticks from both exchanges, compute cross-correlation, detect le
 3. **No locks**: No `Mutex`, `RwLock`, or `await` in hot path
 4. **Defensive math**: All divisions guarded by epsilon, results clamped
 5. **Single consumer**: One thread reads from crossbeam channel
-6. **Venue-routed tracking**: `ImpulseDetector` routes ticks to `tracker_a` (Exchange A) or `tracker_b` (Exchange B) only — never both. Cross-pollution was a critical bug fixed in v0.1.1.
-7. **NaN/Inf guards**: `MidpriceTracker::update()` rejects invalid prices and checks `is_finite()` before division.
-8. **Warmup gate**: Both trackers must be `initialized` AND `warmed_up` before generating impulses. Prevents 382k bps initialization spike artifacts.
-9. **Sanity check**: Deltas > 500 bps are silently rejected. Real microstructure impulses are 5-50 bps.
-10. **Conservative lagging**: `None` from `other_delta()` means "no data yet" and is treated as NOT lagging.
+6. **Venue-routed tracking**: `ImpulseDetector` routes ticks to `tracker_a` (Exchange A) or `tracker_b` (Exchange B) only.
+7. **NaN/Inf guards**: `MidpriceTracker::update()` rejects invalid prices.
+8. **Warmup gate**: Both trackers must be `initialized` AND `warmed_up` before generating impulses.
+9. **Sanity check**: Deltas > 500 bps are silently rejected.
+10. **Lag check restored**: `other_delta() < 1.5 bps` (was hardcoded `true` in v0.1.2).
+11. **Local timestamps for freshness**: `last_local_update_ns` uses `SystemTime::now()`. Exchange timestamps only for delta calculation.
+12. **Freshness gate**: Both venues must have ticked within 400ms (local time).
 
 ## Memory Layout
 
