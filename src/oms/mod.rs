@@ -136,6 +136,34 @@ impl NetDelta {
         total
     }
 
+    /// Get position notional for a (venue, symbol) pair.
+    /// Returns 0.0 if no position exists.
+    pub fn position_notional(&self, venue: VenueId, symbol: &Symbol) -> f64 {
+        let venue_idx = venue.0 as usize;
+        for (sym, idx) in &self.symbol_indices {
+            if sym == symbol {
+                if let Some(ref pos) = self.positions[venue_idx][*idx] {
+                    return pos.size.abs() * pos.entry_price;
+                }
+            }
+        }
+        0.0
+    }
+
+    /// Get signed position size for a (venue, symbol) pair.
+    /// Positive = LONG, Negative = SHORT, 0.0 = flat.
+    pub fn position_size(&self, venue: VenueId, symbol: &Symbol) -> f64 {
+        let venue_idx = venue.0 as usize;
+        for (sym, idx) in &self.symbol_indices {
+            if sym == symbol {
+                if let Some(ref pos) = self.positions[venue_idx][*idx] {
+                    return pos.size;
+                }
+            }
+        }
+        0.0
+    }
+
     /// Get total net delta across all symbols.
     pub fn total_net_delta(&self) -> f64 {
         let mut total = 0.0;
@@ -193,6 +221,11 @@ pub struct OrderManagementSystem {
     pending_orders: HashMap<String, OrderRequest>,
     /// Side-aware cooldown: last trade timestamp per (symbol, side)
     last_trade_per_symbol: HashMap<(String, OrderSide), u64>,
+    /// Cumulative position notional per (venue, symbol) — tracked at order time
+    /// This is used for position cap BEFORE fills arrive
+    cumulative_notional: HashMap<(String, String), f64>,  // (venue_str, symbol) → notional
+    /// Signed position size per (venue, symbol) for direction-aware checks
+    cumulative_size: HashMap<(String, String), f64>,       // (venue_str, symbol) → signed size
 }
 
 impl OrderManagementSystem {
@@ -207,6 +240,8 @@ impl OrderManagementSystem {
             preflight,
             pending_orders: HashMap::new(),
             last_trade_per_symbol: HashMap::new(),
+            cumulative_notional: HashMap::new(),
+            cumulative_size: HashMap::new(),
         }
     }
 
@@ -242,6 +277,28 @@ impl OrderManagementSystem {
         // Run pre-flight checks
         self.preflight.check_signal(signal, current_price, &self.net_delta)?;
 
+        // Position cap: $100 max notional per (venue, symbol), direction-aware.
+        let max_position_notional = 100.0;
+        let venue_key = format!("{:?}", signal.target_venue);
+        let sym_key = signal.symbol.0.clone();
+        let cap_key = (venue_key, sym_key);
+
+        let current_notional = *self.cumulative_notional.get(&cap_key).unwrap_or(&0.0);
+        let current_size = *self.cumulative_size.get(&cap_key).unwrap_or(&0.0);
+        let trade_notional = self.risk_settings.max_notional_usd;
+
+        if current_notional >= max_position_notional {
+            // At cap — only allow if this trade REDUCES the position
+            let would_reduce = (current_size > 0.0 && signal.side == OrderSide::Sell)
+                || (current_size < 0.0 && signal.side == OrderSide::Buy);
+            if !would_reduce {
+                return Err(RiskError::ExecutionFailed(format!(
+                    "Position cap: {} on {:?} is ${:.0} notional (cap=${:.0})",
+                    signal.symbol, signal.target_venue, current_notional, max_position_notional
+                )));
+            }
+        }
+
         // Check for self-trade
         if self.risk_settings.self_trade_prevention {
             self.check_self_trade(signal)?;
@@ -270,6 +327,15 @@ impl OrderManagementSystem {
             Ok(ack) => {
                 // Update side-aware cooldown
                 self.last_trade_per_symbol.insert(cooldown_key, now);
+
+                // Update cumulative position tracking
+                let signed_size = match signal.side {
+                    OrderSide::Buy => size,
+                    OrderSide::Sell => -size,
+                };
+                *self.cumulative_notional.entry(cap_key.clone()).or_insert(0.0) += trade_notional;
+                *self.cumulative_size.entry(cap_key).or_insert(0.0) += signed_size;
+
                 Ok(ack)
             }
             Err(e) => {

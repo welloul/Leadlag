@@ -190,8 +190,10 @@ impl ImpulseDetector {
         }
 
         // Freshness gate: both venues must have ticked recently (LOCAL timestamps)
-        let a_stale = timestamp_ns - self.tracker_a.last_local_update_ns > self.venue_freshness_ns;
-        let b_stale = timestamp_ns - self.tracker_b.last_local_update_ns > self.venue_freshness_ns;
+        let a_stale = timestamp_ns.saturating_sub(self.tracker_a.last_local_update_ns)
+            > self.venue_freshness_ns;
+        let b_stale = timestamp_ns.saturating_sub(self.tracker_b.last_local_update_ns)
+            > self.venue_freshness_ns;
         if a_stale || b_stale {
             return None;
         }
