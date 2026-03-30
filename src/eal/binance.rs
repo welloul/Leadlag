@@ -8,10 +8,15 @@ use crossbeam_channel::Sender;
 use futures_util::{SinkExt, StreamExt};
 use serde::Deserialize;
 use std::collections::BTreeMap;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
 use super::{BookLevel, BookUpdate, ExchangeError, MarketData, Symbol, Tick, VenueId};
+
+const KEEPALIVE_SECS: u64 = 30;
+const RECONNECT_BASE_MS: u64 = 1000;
+const RECONNECT_MAX_MS: u64 = 30000;
+const STAGGER_MS: u64 = 100;
 
 /// Binance trade message from WebSocket
 #[derive(Debug, Deserialize)]
@@ -230,10 +235,10 @@ impl BinanceExchange {
         }
     }
 
-    /// Connect to trade stream for a symbol
-    async fn connect_trade_stream(
+    /// Run a single trade stream connection. Returns when disconnected.
+    async fn run_trade_stream(
         symbol: &Symbol,
-        sender: Sender<Arc<Tick>>,
+        sender: &Sender<Arc<Tick>>,
     ) -> Result<(), ExchangeError> {
         let ws_symbol = format!("{}usdt", symbol.0.to_lowercase());
         let url = format!("wss://fstream.binance.com/ws/{}@trade", ws_symbol);
@@ -242,55 +247,78 @@ impl BinanceExchange {
             .await
             .map_err(|e| ExchangeError::ConnectionFailed(e.to_string()))?;
 
-        let (_, mut read) = ws_stream.split();
+        let (mut write, mut read) = ws_stream.split();
 
-        tokio::spawn(async move {
-            while let Some(msg) = read.next().await {
-                if let Ok(Message::Text(text)) = msg {
-                    if let Ok(trade) = serde_json::from_str::<BinanceTrade>(&text) {
-                        let price: f64 = trade.price.parse().unwrap_or(0.0);
-                        let size: f64 = trade.quantity.parse().unwrap_or(0.0);
+        tracing::info!("Binance trade stream connected for {}", symbol.0);
 
-                        let tick = Tick {
-                            venue: VenueId::EXCHANGE_A,
-                            symbol: Symbol::new(&trade.symbol),
-                            price,
-                            size,
-                            exchange_ts_ns: trade.timestamp * 1_000_000,
-                            local_ts_ns: std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap()
-                                .as_nanos() as u64,
-                        };
+        let mut keepalive =
+            tokio::time::interval(std::time::Duration::from_secs(KEEPALIVE_SECS));
+        keepalive.tick().await;
 
-                        let _ = sender.send(Arc::new(tick));
+        let sym_name = symbol.0.clone();
+
+        loop {
+            tokio::select! {
+                msg = read.next() => {
+                    match msg {
+                        Some(Ok(Message::Text(text))) => {
+                            if let Ok(trade) = serde_json::from_str::<BinanceTrade>(&text) {
+                                let price: f64 = trade.price.parse().unwrap_or(0.0);
+                                let size: f64 = trade.quantity.parse().unwrap_or(0.0);
+                                let tick = Tick {
+                                    venue: VenueId::EXCHANGE_A,
+                                    symbol: Symbol::new(&trade.symbol),
+                                    price,
+                                    size,
+                                    exchange_ts_ns: trade.timestamp * 1_000_000,
+                                    local_ts_ns: std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap()
+                                        .as_nanos() as u64,
+                                };
+                                let _ = sender.send(Arc::new(tick));
+                            }
+                        }
+                        Some(Ok(Message::Close(_))) => {
+                            tracing::warn!("Binance trade WS closed for {}", sym_name);
+                            return Ok(());
+                        }
+                        Some(Ok(Message::Pong(_))) => {}
+                        Some(Err(e)) => {
+                            tracing::error!("Binance trade WS error for {}: {}", sym_name, e);
+                            return Err(ExchangeError::WebSocketError(e.to_string()));
+                        }
+                        None => {
+                            tracing::warn!("Binance trade WS ended for {}", sym_name);
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
+                }
+                _ = keepalive.tick() => {
+                    if write.send(Message::Ping(vec![])).await.is_err() {
+                        tracing::warn!("Binance keepalive failed for {}", sym_name);
+                        return Ok(());
                     }
                 }
             }
-        });
-
-        Ok(())
+        }
     }
 
-    /// Connect to diff depth stream for a symbol.
-    ///
-    /// Fetches REST snapshot first, then applies live diffs.
-    /// Sends BookUpdate to the channel after each successful diff application.
-    async fn connect_book_stream(
+    /// Run a single book stream connection. Returns when disconnected.
+    async fn run_book_stream(
         symbol: &Symbol,
-        sender: Sender<Arc<BookUpdate>>,
+        sender: &Sender<Arc<BookUpdate>>,
         max_depth: usize,
     ) -> Result<(), ExchangeError> {
         let ws_symbol = format!("{}usdt", symbol.0.to_lowercase());
         let rest_symbol = format!("{}USDT", symbol.0.to_uppercase());
-        let sym = symbol.clone();
 
         // Fetch REST snapshot
         let snapshot_url = format!(
             "https://fapi.binance.com/fapi/v1/depth?symbol={}&limit={}",
             rest_symbol, max_depth
         );
-
         let snapshot: BinanceDepthSnapshot = reqwest::get(&snapshot_url)
             .await
             .map_err(|e| ExchangeError::ConnectionFailed(format!("REST: {}", e)))?
@@ -298,73 +326,122 @@ impl BinanceExchange {
             .await
             .map_err(|e| ExchangeError::ParseError(format!("Snapshot: {}", e)))?;
 
+        // Send initial snapshot
+        let mut initial_book = LocalOrderBook::new(max_depth);
+        initial_book.apply_snapshot(&snapshot);
+        let book_update = initial_book.to_book_update(symbol, VenueId::EXCHANGE_A);
+        let _ = sender.send(Arc::new(book_update));
+
         // Connect to diff stream
         let url = format!(
             "wss://fstream.binance.com/ws/{}@depth@100ms",
             ws_symbol
         );
-
         let (ws_stream, _) = connect_async(&url)
             .await
             .map_err(|e| ExchangeError::ConnectionFailed(e.to_string()))?;
 
-        let (_, mut read) = ws_stream.split();
+        let (mut write, mut read) = ws_stream.split();
 
+        tracing::info!(
+            "Binance book stream connected for {} (snapshot id={})",
+            symbol.0, snapshot.last_update_id
+        );
+
+        let mut local_book = LocalOrderBook::new(max_depth);
+        local_book.last_update_id = snapshot.last_update_id;
+        local_book.synced = true;
+
+        let mut keepalive =
+            tokio::time::interval(std::time::Duration::from_secs(KEEPALIVE_SECS));
+        keepalive.tick().await;
+
+        let sym_name = symbol.0.clone();
         let venue = VenueId::EXCHANGE_A;
 
-        // Send initial snapshot as first book update
-        {
-            let mut initial_book = LocalOrderBook::new(max_depth);
-            initial_book.apply_snapshot(&snapshot);
-            let book_update = initial_book.to_book_update(symbol, venue);
-            let _ = sender.send(Arc::new(book_update));
-        }
-
-        let last_snapshot_id = snapshot.last_update_id;
-        let sym = symbol.clone();
-        let book_sender = sender.clone();
-
-        tokio::spawn(async move {
-            let mut local_book = LocalOrderBook::new(max_depth);
-            let mut synced = true;
-
-            tracing::info!(
-                "Binance book stream started for {} (snapshot id={})",
-                sym, last_snapshot_id
-            );
-
-            // Snapshot already applied — set the book's last_update_id
-            local_book.last_update_id = last_snapshot_id;
-            local_book.synced = true;
-
-            while let Some(msg) = read.next().await {
-                if let Ok(Message::Text(text)) = msg {
-                    if let Ok(diff) =
-                        serde_json::from_str::<BinanceDepthUpdate>(&text)
-                    {
-                        // Apply diff
-                        if local_book.apply_diff(&diff) {
-                            let book_update = local_book.to_book_update(&sym, venue);
-                            let _ = book_sender.send(Arc::new(book_update));
-                        } else if !local_book.synced {
-                            // Gap detected — re-sync needed
-                            tracing::warn!(
-                                "Binance book gap for {} — needs re-sync",
-                                sym
-                            );
+        loop {
+            tokio::select! {
+                msg = read.next() => {
+                    match msg {
+                        Some(Ok(Message::Text(text))) => {
+                            if let Ok(diff) = serde_json::from_str::<BinanceDepthUpdate>(&text) {
+                                if local_book.apply_diff(&diff) {
+                                    let book_update = local_book.to_book_update(symbol, venue);
+                                    let _ = sender.send(Arc::new(book_update));
+                                } else if !local_book.synced {
+                                    tracing::warn!("Binance book gap for {} — needs re-sync", sym_name);
+                                }
+                            }
                         }
+                        Some(Ok(Message::Close(_))) => {
+                            tracing::warn!("Binance book WS closed for {}", sym_name);
+                            return Ok(());
+                        }
+                        Some(Ok(Message::Pong(_))) => {}
+                        Some(Err(e)) => {
+                            tracing::error!("Binance book WS error for {}: {}", sym_name, e);
+                            return Err(ExchangeError::WebSocketError(e.to_string()));
+                        }
+                        None => {
+                            tracing::warn!("Binance book WS ended for {}", sym_name);
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
+                }
+                _ = keepalive.tick() => {
+                    if write.send(Message::Ping(vec![])).await.is_err() {
+                        tracing::warn!("Binance book keepalive failed for {}", sym_name);
+                        return Ok(());
                     }
                 }
             }
+        }
+    }
+
+    /// Spawn reconnection loop for trade stream.
+    fn spawn_trade_loop(symbol: Symbol, sender: Sender<Arc<Tick>>, stagger_ms: u64) {
+        tokio::spawn(async move {
+            if stagger_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(stagger_ms)).await;
+            }
+            let mut attempt: u32 = 0;
+            loop {
+                let result = Self::run_trade_stream(&symbol, &sender).await;
+                if let Err(e) = &result {
+                    tracing::error!("Binance trade failed for {}: {}", symbol.0, e);
+                }
+                let delay = (RECONNECT_BASE_MS * 2u64.pow(attempt)).min(RECONNECT_MAX_MS);
+                tracing::info!("Binance trade reconnecting {} in {}ms", symbol.0, delay);
+                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                attempt = (attempt + 1).min(5);
+            }
         });
+    }
 
-        // Send initial snapshot as first book update
-        let mut initial_book = LocalOrderBook::new(max_depth);
-            initial_book.apply_snapshot(&snapshot);
-        let book_update = initial_book.to_book_update(symbol, venue);
-        let _ = sender.send(Arc::new(book_update));
-
-        Ok(())
+    /// Spawn reconnection loop for book stream.
+    fn spawn_book_loop(
+        symbol: Symbol,
+        sender: Sender<Arc<BookUpdate>>,
+        max_depth: usize,
+        stagger_ms: u64,
+    ) {
+        tokio::spawn(async move {
+            if stagger_ms > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(stagger_ms)).await;
+            }
+            let mut attempt: u32 = 0;
+            loop {
+                let result = Self::run_book_stream(&symbol, &sender, max_depth).await;
+                if let Err(e) = &result {
+                    tracing::error!("Binance book failed for {}: {}", symbol.0, e);
+                }
+                let delay = (RECONNECT_BASE_MS * 2u64.pow(attempt)).min(RECONNECT_MAX_MS);
+                tracing::info!("Binance book reconnecting {} in {}ms", symbol.0, delay);
+                tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                attempt = (attempt + 1).min(5);
+            }
+        });
     }
 }
 
@@ -382,9 +459,10 @@ impl MarketData for BinanceExchange {
     ) -> Result<crossbeam_channel::Receiver<Arc<Tick>>, ExchangeError> {
         let (tx, rx) = crossbeam_channel::bounded(1024);
 
-        for symbol in symbols {
+        for (i, symbol) in symbols.iter().enumerate() {
             let sender = tx.clone();
-            Self::connect_trade_stream(symbol, sender).await?;
+            let stagger = (i as u64) * STAGGER_MS;
+            Self::spawn_trade_loop(symbol.clone(), sender, stagger);
         }
 
         Ok(rx)
@@ -395,9 +473,7 @@ impl MarketData for BinanceExchange {
         symbol: &Symbol,
     ) -> Result<crossbeam_channel::Receiver<Arc<BookUpdate>>, ExchangeError> {
         let (tx, rx) = crossbeam_channel::bounded(1024);
-
-        Self::connect_book_stream(symbol, tx, 20).await?;
-
+        Self::spawn_book_loop(symbol.clone(), tx, 20, 0);
         Ok(rx)
     }
 
