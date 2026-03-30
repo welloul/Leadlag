@@ -110,43 +110,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let tick_rx_b = exchange_b.subscribe_ticks(&symbols).await?;
     info!("Subscribed to ticks for {} symbols", symbols.len());
 
-    // Subscribe to order book data for OBI-based strategies
-    let use_obi = settings.strategy.active_strategy == "impulse_obi";
-    let (book_rx_a, book_rx_b) = if use_obi {
-        info!("OBI strategy active — subscribing to order book data");
-        // Try to subscribe per-symbol; fall back gracefully if not implemented
-        let mut book_a = None;
-        let mut book_b = None;
-        for sym in &symbols {
-            match exchange_a.subscribe_book(sym).await {
-                Ok(rx) => {
-                    info!("Book subscription successful for {:?} {}", VenueId::EXCHANGE_A, sym);
-                    book_a = Some(rx);
-                }
-                Err(e) => {
-                    warn!(
-                        "Book subscription not available for {:?} {}: {} (OBI signals will be limited)",
-                        VenueId::EXCHANGE_A, sym, e
-                    );
-                }
+    // Subscribe to L2 order book data for ALL symbols on ALL venues.
+    // The simulator needs real book data for fills — synthetic books are stale.
+    // Collect all receivers (don't overwrite — each symbol gets its own channel).
+    let mut book_receivers: Vec<(eal::Symbol, VenueId, crossbeam_channel::Receiver<std::sync::Arc<eal::BookUpdate>>)> = Vec::new();
+    for sym in &symbols {
+        match exchange_a.subscribe_book(sym).await {
+            Ok(rx) => {
+                info!("Book subscription: {:?} {}", VenueId::EXCHANGE_A, sym);
+                book_receivers.push((sym.clone(), VenueId::EXCHANGE_A, rx));
             }
-            match exchange_b.subscribe_book(sym).await {
-                Ok(rx) => {
-                    info!("Book subscription successful for {:?} {}", VenueId::EXCHANGE_B, sym);
-                    book_b = Some(rx);
-                }
-                Err(e) => {
-                    warn!(
-                        "Book subscription not available for {:?} {}: {} (OBI signals will be limited)",
-                        VenueId::EXCHANGE_B, sym, e
-                    );
-                }
+            Err(e) => {
+                warn!("Book subscription failed for {:?} {}: {}", VenueId::EXCHANGE_A, sym, e);
             }
         }
-        (book_a, book_b)
-    } else {
-        (None, None)
-    };
+        match exchange_b.subscribe_book(sym).await {
+            Ok(rx) => {
+                info!("Book subscription: {:?} {}", VenueId::EXCHANGE_B, sym);
+                book_receivers.push((sym.clone(), VenueId::EXCHANGE_B, rx));
+            }
+            Err(e) => {
+                warn!("Book subscription failed for {:?} {}: {}", VenueId::EXCHANGE_B, sym, e);
+            }
+        }
+    }
+    info!("Book subscriptions: {} active", book_receivers.len());
 
     // Initialize time grid for tick alignment
     let mut timegrid = TimeGrid::new(settings.app.tick_precision_ns);
@@ -424,39 +412,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        // Process book updates from exchange A (Issue 2 fix)
-        if let Some(ref book_rx) = book_rx_a {
+        // Process L2 order book updates from all venues.
+        // Feed real book data into simulator (per-venue books) and pipeline (OBI signals).
+        for (_sym, _venue, ref book_rx) in &book_receivers {
             if let Ok(book) = book_rx.try_recv() {
-                if let Some(signal) = pipeline.process_book(&book) {
-                    signal_count += 1;
-                    info!(
-                        "OBI signal: {} {} (r={:.3})",
-                        signal.side, signal.symbol, signal.correlation_r
-                    );
+                // Feed real book into simulator
+                simulator.update_book((*book).clone());
 
-                    telemetry.log_signal(
-                        &signal.symbol.to_string(),
-                        &signal.side.to_string(),
-                        signal.correlation_r,
-                        signal.lag_offset_ns,
-                    );
-
-                    let price = book.best_bid().unwrap_or(0.0);
-                    match oms.process_signal(&signal, price, &simulator).await {
-                        Ok(ack) => {
-                            info!("Order submitted: {}", ack.order_id);
-                        }
-                        Err(e) => {
-                            warn!("Order rejected: {}", e);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Process book updates from exchange B (Issue 2 fix)
-        if let Some(ref book_rx) = book_rx_b {
-            if let Ok(book) = book_rx.try_recv() {
+                // Feed into signal pipeline for OBI detection
                 if let Some(signal) = pipeline.process_book(&book) {
                     signal_count += 1;
                     info!(

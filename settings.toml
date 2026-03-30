@@ -66,7 +66,7 @@ obi_spike_threshold = 0.3        # Liquidity shift detection
 max_notional_usd = 5000.0   # Max size per single trade
 max_drawdown_daily = 200.0  # Circuit breaker
 max_slippage_bps = 8        # 0.08% max allowed slippage
-signal_ttl_ms = 150         # Discard lead signal if not filled within this time
+signal_ttl_ms = 1500        # Discard lead signal if not filled within this time
 self_trade_prevention = true
 
 # --- Simulation / Paper Trading ---
