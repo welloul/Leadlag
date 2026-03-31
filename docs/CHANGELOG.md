@@ -1,10 +1,23 @@
-# Changelog
+## [0.2.0] — 2026-03-31 — Passive Market Making & Alpha Decay
 
-All notable changes to TokioParasite are documented here.
+### Execution Model (The "Maker" Shift)
+- **Passive Limit Lifecycle** — Transitions from liquidity-taking (Market/IOC) to **Post-Only Limit** entries at mid-price.
+- **Automated Take-Profit (TP)** — OMS now generates secondary limit orders at **+13.0 bps** upon entry fill.
+- **Symbol-Specific Timeouts** — Tiered exit logic based on alpha decay: **1.0s** (Fast), **2.5s** (Slow), **1.5s** (Default).
+- **Limit-Matching Simulator** — `PaperSimulator` rebuilt for asynchronous fill broadcasting and pending-limit order book matching.
+
+### Strategy & Telemetry
+- **Alpha Decay Probes** — High-resolution wall-clock instrumentation measures the Tokyo opportunity window (Avg: 500ms).
+- **Configuration Hot-Reload** — 15-second filesystem watcher re-loads `settings.toml` live. Adjust thresholds/timeouts without process restarts.
+- **Optimized Thresholds** — `entry_threshold_bps = 4.5`, `lag_threshold_bps = 1.0`, `obi_persist_ms = 30`.
+
+### Infrastructure
+- **Symbol Normalization (v2)** — Unified `Symbol::normalize()` across all metadata/matchers.
+- **OMS Pending Trackers** — Enhanced position tracking by fill-timestamp for better risk accounting during execution lag.
 
 ---
 
-## [0.1.3] — 2026-03-30 — Entry Logic Tightening & Position Cap
+## [0.1.5] — 2026-03-31 — Signal Quality and Position Management Enhancements
 
 ### Entry Logic
 - **Freshness gate 400ms** — Both venues must have ticked within 400ms (local timestamps). Exchange timestamps unreliable across venues.

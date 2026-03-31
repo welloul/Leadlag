@@ -29,6 +29,8 @@
 | O7 | No position-level notional cap | ✅ Resolved — $100 cap, direction-aware |
 | O8 | No cooldown between trades | ✅ Resolved — side-aware 200ms |
 | O9 | No book consumption model | ✅ Resolved — 50% of best level |
+| O10 | Taker fee drag (entry fee > edge) | ✅ Resolved — Shift to Post-Only Maker |
+| O11 | Manual exit management (laggard) | ✅ Resolved — Auto-TP + Tiered symbol timeouts |
 
 ## Simulator
 
@@ -50,6 +52,7 @@
 | SP2 | OBI flicker/spoofing vulnerable | ✅ Resolved — time-based persistence |
 | SP3 | No cross-venue edge check | ✅ Resolved — fees-aware entry threshold |
 | SP4 | Combo window too tight (10ms) | ✅ Resolved — 150ms |
+| SP5 | Blind exits/timeouts | ✅ Resolved — Alpha Decay Probes telemetry |
 
 ## Infra
 
@@ -65,6 +68,7 @@
 | I8 | Hyperliquid WS parsing broken | ✅ Resolved |
 | I9 | Binance diff stream gap re-sync | ⚠️ Deferred |
 | I10 | No per-symbol performance tracking | ✅ Resolved — heartbeat |
+| I11 | Static configuration (restart required) | ✅ Resolved — 15s Hot-Reload heartbeat |
 
 ## Known Technical Debt
 

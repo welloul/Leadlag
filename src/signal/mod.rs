@@ -59,6 +59,17 @@ pub struct SignalPipeline<const N: usize> {
 }
 
 impl<const N: usize> SignalPipeline<N> {
+    /// Update strategy settings for hot-reload.
+    pub fn update_settings(&mut self, settings: StrategySettings) {
+        self.settings = settings.clone();
+        self.min_r = settings.min_correlation_r;
+        
+        // Update all symbol engines
+        for engine in self.impulse_obi_engines.values_mut() {
+            engine.update_settings(settings.entry_threshold_bps, settings.high_conviction_only);
+        }
+    }
+
     /// Create a new signal pipeline.
     pub fn new(settings: StrategySettings) -> Self {
         let min_r = settings.min_correlation_r;
@@ -353,6 +364,7 @@ mod tests {
             fill_conservatism: 0.5,
             high_conviction_only: true,
             exit_timeout_ms: 2000,
+            symbol_timeouts: std::collections::HashMap::new(),
         };
 
         let pipeline = SignalPipeline::<256>::new(settings);
@@ -389,6 +401,7 @@ mod tests {
             fill_conservatism: 0.5,
             high_conviction_only: true,
             exit_timeout_ms: 5000,
+            symbol_timeouts: std::collections::HashMap::new(),
         };
 
         let pipeline = SignalPipeline::<256>::new(settings);

@@ -110,6 +110,12 @@ impl ImpulseObiEngine {
         }
     }
 
+    /// Update strategy settings for hot-reload.
+    pub fn update_settings(&mut self, entry_bps: f64, high_conviction: bool) {
+        self.entry_threshold_bps = entry_bps;
+        self.high_conviction_only = high_conviction;
+    }
+
     /// Direction-normalized edge calculation.
     /// Returns positive bps if the trade has edge, negative if not.
     ///

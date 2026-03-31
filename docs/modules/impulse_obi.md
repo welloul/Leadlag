@@ -1,30 +1,31 @@
-# Impulse-OBI Strategy (v0.1.3)
+# Impulse-OBI Strategy (v0.2.0)
 
 ## Overview
+Passive market-making strategy that captures Tokyo-based lead-lag inefficiencies. Transitions from liquidity-taking to **Post-Only Limit** entries to eliminate fee drag and exploit the ~500ms alpha window.
 
-Event-driven microstructure alpha strategy that exploits real-time market inefficiencies between cryptocurrency exchanges. Combines trade impulse detection with order book imbalance divergence.
-
-## Entry Logic Gate (v0.1.3)
+## Entry Logic Gate (v0.2.0 — Maker Mode)
 
 Every signal must pass ALL gates before execution:
 
 ```
 Tick/Book ──▶ Signal Detected
                 │
-                ├─ [1] Warmup gate: both trackers init + warmed_up?
-                ├─ [2] Sanity gate: delta < 500 bps?
-                ├─ [3] Freshness gate: both venues ticked within 400ms (local)?
-                ├─ [4] Lag gate: other venue |delta| < 1.5 bps?
-                ├─ [5] Edge gate: cross-venue spread ≥ 8 bps (direction-normalized)?
-                ├─ [6] Cooldown: 200ms since last (symbol, side) trade?
-                ├─ [7] Position cap: cumulative notional < $100 per (venue, symbol)?
-                ├─ [8] Book age gate: target venue book < 400ms stale?
-                ├─ [9] TTL: signal age < 500ms?
-                └─ [10] Conservative fill: 50% of best level size
+                ├─ (1) Warmup: both trackers init + warmed_up?
+                ├─ (2) Freshness: both venues ticked within 400ms (local)?
+                ├─ (3) Lag gate: other venue |delta| < 1.0 bps?
+                ├─ (4) Edge gate: cross-venue spread ≥ 4.5 bps?
+                ├─ (5) Post-Only: Order must sit at mid-price (Maker)
+                └─ (6) Capture Alpha Window (~500ms Tokyo)
                 │
                 ▼
-            ORDER SUBMITTED
+            POST-ONLY LIMIT ORDER PLACED
 ```
+
+## Alpha Decay Telemetry (NEW v0.2.0)
+High-resolution measurement of the predictive window. Uses local wall-clock timers to measure the gap between a lead breakout and laggard convergence.
+*   **Avg Window:** 500ms.
+*   **High-Stability Assets:** TON, ARB (1.5s - 2.5s).
+*   **High-Competition Assets:** BCH, ADA (<200ms).
 
 ## Datapoint 1: Trade Impulse Detection
 

@@ -1,7 +1,7 @@
-# Config Module — Settings & Validation (v0.1.3)
+# Config Module — Settings & Validation (v0.2.0)
 
 ## Objective
-Load, validate, and provide configuration from `settings.toml`. Fail-fast on invalid settings before any network connections are established.
+Load, validate, and provide configuration from `settings.toml`. Supports **Hot-Reloading** of strategy parameters during runtime via a 15-second filesystem watcher. Fail-fast on invalid settings before any network connections are established.
 
 ## Invariants
 
@@ -9,8 +9,9 @@ Load, validate, and provide configuration from `settings.toml`. Fail-fast on inv
 2. **deny_unknown_fields**: Typos in TOML are caught
 3. **Power-of-2 check**: `window_size_ticks` must be `2^k`
 4. **Environment expansion**: `${VAR}` syntax for secrets
+5. **Hot-Reload safety**: Static validation must pass before swapping settings in memory.
 
-## Memory Layout (v0.1.3)
+## Memory Layout (v0.2.0)
 
 ```
 Settings:

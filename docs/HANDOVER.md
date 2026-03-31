@@ -4,11 +4,12 @@
 
 | Aspect | Status |
 |--------|--------|
-| **Phase** | Paper Trading (v0.1.5) |
-| **Stability** | All 69 tests passing |
+| **Phase** | Passive Market Making (v0.2.0) |
+| **Stability** | All tests passing (limit matching verified) |
 | **Live Trading** | Disabled (simulation only) |
 | **API Keys** | Not required (market data is public) |
-| **Active Strategy** | Impulse-OBI (both exchanges live on AWS) |
+| **Active Strategy** | Impulse-OBI (Maker Mode + Alpha Decay Probes) |
+| **Edge Window** | ~500ms Average Tokyo Decay |
 | **Deployment** | AWS EC2 (13.231.81.63, Amazon Linux 2023, ap-northeast-1) |
 
 ## Context for Next AI
@@ -32,7 +33,16 @@
 5. **Binance diff stream gap recovery** — When `prev_final_update_id != last_update_id`, the book is marked unsynced but doesn't re-fetch the REST snapshot. Needs a re-sync mechanism.
 6. **`other_is_lagging` tuned** — Checks `current_delta() < lag_threshold_bps` (1.0 bps). Prevents trading when other venue is moving significantly.
 
-### RECENT FIXES (v0.1.3 — Entry Logic Tightening)
+### RECENT FIXES (v0.2.0 — Passive Market Making & Alpha Decay)
+1. **Passive Limit Lifecycle** — Bot now places `Post-Only` limit orders at mid-price instead of crossing the spread. Fees reduced to Maker tier (-1bp to 2bp rebate).
+2. **Alpha Decay Probes** — High-resolution telemetry system measures local nanoseconds between lead breakout and laggard catch-up. Average Tokyo window: 500ms (BCH: 100ms, TON: 2.5s).
+3. **Symbol-Specific Timeouts** — Replaced global `exit_timeout_ms` with a tiered lookup table. Fast coins (ADA, BCH) exit at 1.0s; slow coins (TON, ARB) hold for 2.5s.
+4. **Configuration Hot-Reload** — Heartbeat loop re-reads `settings.toml` every 15s. Can adjust thresholds and timeouts live without dropping WebSocket connections.
+5. **Take-Profit (TP) Expansion** — Global target increased to 13.0 bps for high-conviction maker entries.
+6. **Limit-Matching Simulator** — Rebuilt `PaperSimulator` with async fill broadcasting and pending-order matching logic.
+7. **OMS Pending Trackers** — Track positions by fill-time instead of submission-time to prevent exposure bloat during latency spikes.
+
+### RECENT FIXES (v0.1.5 — Signal Quality and Position Management Enhancements)
 1. **Freshness gate 400ms** — Both venues must have received a tick within 400ms (local time). Prevents trading against stale data.
 2. **Lag check restored** — `other_is_lagging` now checks `|delta| < 1.5 bps` instead of hardcoded `true`.
 3. **Fees-aware spread check** — `entry_threshold_bps = 8` (covers taker fees ~5-10 bps + slippage). Direction-normalized edge calculation.

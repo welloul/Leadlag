@@ -37,6 +37,20 @@ impl Symbol {
     pub fn new(s: impl Into<String>) -> Self {
         Self(s.into())
     }
+
+    /// Normalize venue symbol to a canonical form for cross-venue keying.
+    /// Strips common suffixes like "USDT", "USDC" so Binance's "ZECUSDT"
+    /// matches Hyperliquid's "ZEC".
+    pub fn normalize(&self) -> Symbol {
+        let s = &self.0;
+        if let Some(stripped) = s.strip_suffix("USDT") {
+            return Symbol::new(stripped);
+        }
+        if let Some(stripped) = s.strip_suffix("USDC") {
+            return Symbol::new(stripped);
+        }
+        self.clone()
+    }
 }
 
 impl fmt::Display for Symbol {
@@ -213,6 +227,8 @@ pub struct OrderRequest {
     pub size: f64,
     /// Limit price (ignored for market orders).
     pub price: Option<f64>,
+    /// Post-Only flag (ensure we are a maker).
+    pub post_only: bool,
     /// Client-generated order ID for idempotency.
     pub client_order_id: String,
 }
@@ -227,6 +243,7 @@ impl OrderRequest {
             order_type: OrderType::Market,
             size,
             price: None,
+            post_only: false,
             client_order_id: uuid::Uuid::new_v4().to_string(),
         }
     }
@@ -240,6 +257,21 @@ impl OrderRequest {
             order_type: OrderType::Market,
             size,
             price: None,
+            post_only: false,
+            client_order_id: uuid::Uuid::new_v4().to_string(),
+        }
+    }
+
+    /// Create a limit order.
+    pub fn limit(venue: VenueId, symbol: Symbol, side: OrderSide, size: f64, price: f64, post_only: bool) -> Self {
+        Self {
+            venue,
+            symbol,
+            side,
+            order_type: OrderType::Limit,
+            size,
+            price: Some(price),
+            post_only,
             client_order_id: uuid::Uuid::new_v4().to_string(),
         }
     }

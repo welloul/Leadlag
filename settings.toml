@@ -35,7 +35,7 @@ max_rtt_ms = 100
 [strategy]
 active_strategy = "impulse_obi"
 
-symbols = ["ZEC", "WLD", "FARTCOIN", "DOGE", "SUI", "BCH", "PUMP", "ADA"]
+symbols = ["ZEC", "DOGE", "SUI", "BCH", "PUMP", "ADA", "WIF", "ARB", "TON"]
 
 # Correlation-Hysteresis settings
 window_size_ticks = 256
@@ -45,43 +45,55 @@ enable_obi = true
 obi_weight = 0.3
 
 # Impulse-OBI settings
-impulse_threshold_bps = 7        # Raised: minimum bps move to qualify as impulse (was 5)
+impulse_threshold_bps = 7.0       # Optimized for Tokyo Edge: captures more breakthrough attempts
 lag_threshold_bps = 1.0          # Lowered: tighter lag gate — 1 bps divergence is enough
 impulse_window_ms = 5            # Lookback window (unchanged)
 signal_timeout_ms = 250          # Combo window raised (was 150ms) — wider window catches more OBI+impulse pairs
 min_trade_size_filter = 0.001
-spread_filter_bps = 10
+spread_filter_bps = 0.0           # Disabled for Maker strat (spread is our edge)
 
 # OBI divergence settings
-obi_strong_threshold = 0.65      # Slightly relaxed (was 0.7) — catches earlier pressure
+obi_strong_threshold = 0.40      # Relaxed for high freq
 obi_neutral_threshold = 0.15     # Tighter neutral band (was 0.2)
 obi_depth = 5
-obi_spike_threshold = 0.25       # More sensitive shift detector
-
+obi_spike_threshold = 0.20       # More sensitive
 # Entry logic
-venue_freshness_ms = 400         # Both venues must have ticked within 400ms
-entry_threshold_bps = 5.5          # Raised: 5 bps fees + 0.5 bps slippage buffer
-cooldown_ms = 20                 # Side-aware cooldown between trades
-max_levels_consumed = 3          # Max price levels to sweep
+venue_freshness_ms = 400
+entry_threshold_bps = 4.5
+cooldown_ms = 15
+max_levels_consumed = 5          # Be more aggressive on the breakthrough
 obi_persist_ms = 30              # CRITICAL: was 200ms — book pressure in crypto evaporates in 10-50ms
 fill_conservatism = 0.5          # Only fill 50% of best level size
 high_conviction_only = true
-exit_timeout_ms = 5000           # Close positions older than 5s (lead-lag edge evaporates in <2s)
+exit_timeout_ms = 1500           # 1.5s hold (allow limit to fill)
+take_profit_bps = 10.0
+
+[strategy.symbol_timeouts]
+default = 1500
+ADA = 1000
+BCH = 1000
+ZEC = 1000
+TON = 2500
+ARB = 2500
+SUI = 2500
+PUMP = 1500
+WIF = 1500
 
 # --- Risk Management ---
 
 [risk]
-max_notional_usd = 10.0     # Max size per single trade (small relative to $100 position cap)
+max_notional_usd = 20.0     # Max size per single trade
+max_position_usd = 500.0    # Max net position per symbol
 max_drawdown_daily = 200.0
-max_slippage_bps = 8
-signal_ttl_ms = 500             # Signal time-to-live (was 1500ms)
+max_slippage_bps = 12.0
+signal_ttl_ms = 500             # Signal time-to-live
 self_trade_prevention = true
 
 # --- Simulation / Paper Trading ---
 
 [simulation]
 enabled = true
-use_real_data = false           # Set to true for live market data feeds
+use_real_data = true           # Set to true for live market data feeds
 latency_simulation_ms = 5
 fee_tier_bps = 2.5
 match_l2_depth = 10

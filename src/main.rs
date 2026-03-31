@@ -17,7 +17,7 @@ mod signal;
 mod sim;
 
 use config::Settings;
-use eal::{BinanceExchange, HyperliquidExchange, MarketData, MockExchange, VenueId};
+use eal::{BinanceExchange, HyperliquidExchange, MarketData, MockExchange, VenueId, OrderExecution};
 use logging::init_logging;
 use oms::OrderManagementSystem;
 use persist::{StateStore, TelemetryWriter};
@@ -27,19 +27,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tracing::{info, warn};
 
-/// Normalize venue symbol to a canonical form for cross-venue keying.
-/// Strips common suffixes like "USDT", "USDC" so Binance's "ZECUSDT"
-/// matches Hyperliquid's "ZEC" in the simulator.
-fn normalize_symbol(sym: &eal::Symbol) -> eal::Symbol {
-    let s = &sym.0;
-    if let Some(stripped) = s.strip_suffix("USDT") {
-        return eal::Symbol::new(stripped);
-    }
-    if let Some(stripped) = s.strip_suffix("USDC") {
-        return eal::Symbol::new(stripped);
-    }
-    sym.clone()
-}
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -143,8 +130,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         settings.app.tick_precision_ns
     );
 
-    // Initialize paper simulator for order execution (Issue 3 fix)
-    let simulator = PaperSimulator::new(settings.simulation.clone());
+    // Initialize paper simulator for order execution
+    let mut simulator = PaperSimulator::new(settings.simulation.clone());
+    
+    // Asynchronous fill channel for limit order notifications
+    let (fill_tx, fill_rx) = crossbeam_channel::unbounded::<eal::FillEvent>();
+    simulator.set_fill_tx(fill_tx);
 
     // Main event loop
     info!("Entering main event loop...");
@@ -159,10 +150,20 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut tick_count_a = 0u64;
     let mut tick_count_b = 0u64;
     let mut last_heartbeat = std::time::Instant::now();
+    let mut last_config_check = std::time::Instant::now();
 
     // Per-symbol performance tracking
     let mut symbol_fills: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
     let mut symbol_rejects: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+    
+    // Edge Decay Tracking: Measures how long it takes for the laggard to "catch up" to the leader's move.
+    // probe is created on signal, resolved on laggard reaching target price.
+    struct DecayProbe {
+        target_price: f64,
+        side: eal::OrderSide,
+        start_ts_ns: u64,
+    }
+    let mut edge_decay_probes: std::collections::HashMap<eal::Symbol, DecayProbe> = std::collections::HashMap::new();
 
     // Signal distribution tracking
     let mut high_conviction_count = 0u64;
@@ -185,11 +186,26 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tick_count_a += 1;
             telemetry.log_tick(&tick);
             last_price_a = Some(tick.price);
+            
+            // Resolve Alpha Decay probes (Laggard Catchup check)
+            if let Some(probe) = edge_decay_probes.get(&tick.symbol.normalize()) {
+                let reached = match probe.side {
+                    eal::OrderSide::Buy => tick.price >= probe.target_price,
+                    eal::OrderSide::Sell => tick.price <= probe.target_price,
+                };
+                if reached {
+                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
+                    let decay_ms = (now - probe.start_ts_ns) as f64 / 1_000_000.0;
+                    info!("ALPHA_DECAY: {} | decay_ms={:.2} | target={:.4} | side={:?}", 
+                        tick.symbol, decay_ms, probe.target_price, probe.side);
+                    edge_decay_probes.remove(&tick.symbol.normalize());
+                }
+            }
 
             // Update Exchange A's book at its actual price.
             // Normalize symbol (strip USDT suffix) so Binance and HL share the same key.
             // Only update the venue that sent the tick — never seed other venues with fake data.
-            let norm_sym = normalize_symbol(&tick.symbol);
+            let norm_sym = tick.symbol.normalize();
             simulator.update_book_from_tick(&norm_sym, tick.price, tick.venue);
 
             // Process through time grid (zero-cost, no heap allocation)
@@ -240,10 +256,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     signal.lag_offset_ns,
                 );
 
+                // Start Edge Decay probe: Lead moved, wait for laggard to catch up
+                edge_decay_probes.insert(signal.symbol.normalize(), DecayProbe {
+                    target_price: tick.price,
+                    side: signal.side,
+                    start_ts_ns: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64,
+                });
+
                 // Check target venue book staleness.
                 // Normalize symbol for cross-venue keying (Binance: ZECUSDT → ZEC).
                 // Allow stale books <2s old. Never seed with fake data.
-                let sig_sym = normalize_symbol(&signal.symbol);
+                let sig_sym = signal.symbol.normalize();
                 let staleness_ms = simulator.book_staleness_ns(&sig_sym, signal.target_venue)
                     .map(|ns| ns as f64 / 1e6);
                 let has_book = simulator.is_venue_liquid(&sig_sym, signal.target_venue);
@@ -262,7 +285,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             .unwrap_or(tick.price);
                         match oms.process_signal(&signal, exec_price, &simulator).await {
                             Ok(ack) => {
-                                info!("Order submitted: {}", ack.order_id);
+                                info!("ORDER_ENTRY: {} {} | price={:.4} | r={:.2} | id={}", 
+                                    signal.side, signal.symbol, exec_price, signal.correlation_r, ack.order_id);
                                 *symbol_fills.entry(sig_sym.0.clone()).or_insert(0) += 1;
                             }
                             Err(e) => {
@@ -332,9 +356,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             telemetry.log_tick(&tick);
             last_price_b = Some(tick.price);
 
+            // Resolve Alpha Decay probes (Laggard B Catchup check)
+            if let Some(probe) = edge_decay_probes.get(&tick.symbol.normalize()) {
+                let reached = match probe.side {
+                    eal::OrderSide::Buy => tick.price >= probe.target_price,
+                    eal::OrderSide::Sell => tick.price <= probe.target_price,
+                };
+                if reached {
+                    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
+                    let decay_ms = (now - probe.start_ts_ns) as f64 / 1_000_000.0;
+                    info!("ALPHA_DECAY: {} | decay_ms={:.2} | target={:.4} | side={:?}", 
+                        tick.symbol, decay_ms, probe.target_price, probe.side);
+                    edge_decay_probes.remove(&tick.symbol.normalize());
+                }
+            }
+
             // Update Exchange B's book at its actual price.
             // Normalize symbol so Binance and HL share the same key.
-            let norm_sym = normalize_symbol(&tick.symbol);
+            let norm_sym = tick.symbol.normalize();
             simulator.update_book_from_tick(&norm_sym, tick.price, tick.venue);
 
             let ingest_result = timegrid.ingest_tick(&tick);
@@ -383,8 +422,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     signal.lag_offset_ns,
                 );
 
+                // Start Edge Decay probe: Lead moved, wait for laggard to catch up
+                edge_decay_probes.insert(signal.symbol.normalize(), DecayProbe {
+                    target_price: tick.price,
+                    side: signal.side,
+                    start_ts_ns: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64,
+                });
+
                 // Check target venue book staleness — allow stale <2s, never seed fake data
-                let sig_sym = normalize_symbol(&signal.symbol);
+                let sig_sym = signal.symbol.normalize();
                 let staleness_ms = simulator.book_staleness_ns(&sig_sym, signal.target_venue)
                     .map(|ns| ns as f64 / 1e6);
                 let has_book = simulator.is_venue_liquid(&sig_sym, signal.target_venue);
@@ -423,23 +469,48 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 // Feed real book into simulator
                 simulator.update_book((*book).clone());
 
+                // Resolve Alpha Decay probes on Book Updates (usually faster than ticks)
+                if let Some(probe) = edge_decay_probes.get(&book.symbol.normalize()) {
+                    if let Some(mid) = book.mid_price() {
+                        let reached = match probe.side {
+                            eal::OrderSide::Buy => mid >= probe.target_price,
+                            eal::OrderSide::Sell => mid <= probe.target_price,
+                        };
+                        if reached {
+                            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64;
+                            let decay_ms = (now - probe.start_ts_ns) as f64 / 1_000_000.0;
+                            info!("ALPHA_DECAY: {} | decay_ms={:.2} | target={:.4} | side={:?} (from book)", 
+                                book.symbol, decay_ms, probe.target_price, probe.side);
+                            edge_decay_probes.remove(&book.symbol.normalize());
+                        }
+                    }
+                }
+
                 // Book-mid impulse detection (more reliable than trade price)
                 if let Some(signal) = pipeline.process_book_for_impulse(&book) {
                     signal_count += 1;
                     high_conviction_count += 1; // Book-mid signals are always HIGH quality
                     info!(
-                        "BOOK_IMPULSE: {} {} on {:?} (book-mid)",
-                        signal.side, signal.symbol, signal.target_venue
+                        "BOOK_IMPULSE: {} {} on {:?} r={:.2} (book-mid)",
+                        signal.side, signal.symbol, signal.target_venue, signal.correlation_r
                     );
 
-                    let sig_sym = normalize_symbol(&signal.symbol);
+                    let sig_sym = signal.symbol.normalize();
                     if simulator.is_venue_liquid(&sig_sym, signal.target_venue) {
                         let exec_price = simulator.get_mid_price(&sig_sym, signal.target_venue)
                             .unwrap_or(0.0);
+                        
+                        // Start Edge Decay probe on book-based impulse
+                        edge_decay_probes.insert(sig_sym.clone(), DecayProbe {
+                            target_price: book.best_bid().unwrap_or(0.0), // Approximate lead price
+                            side: signal.side,
+                            start_ts_ns: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64,
+                        });
                         if exec_price > 0.0 {
                             match oms.process_signal(&signal, exec_price, &simulator).await {
                                 Ok(ack) => {
-                                    info!("Order submitted: {}", ack.order_id);
+                                    info!("ORDER_ENTRY: {} {} | price={:.4} | r={:.2} | id={}", 
+                                        signal.side, signal.symbol, exec_price, signal.correlation_r, ack.order_id);
                                     *symbol_fills.entry(sig_sym.0.clone()).or_insert(0) += 1;
                                 }
                                 Err(e) => {
@@ -466,7 +537,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                         signal.lag_offset_ns,
                     );
 
-                    let sig_sym = normalize_symbol(&signal.symbol);
+                    let sig_sym = signal.symbol.normalize();
+                    
+                    // Start Edge Decay probe on OBI signals
+                    edge_decay_probes.insert(sig_sym.clone(), DecayProbe {
+                        target_price: book.mid_price().unwrap_or(0.0), // Current lead price
+                        side: signal.side,
+                        start_ts_ns: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64,
+                    });
                     let exec_price = simulator.get_mid_price(&sig_sym, signal.target_venue)
                         .unwrap_or_else(|| book.best_bid().unwrap_or(0.0));
                     match oms.process_signal(&signal, exec_price, &simulator).await {
@@ -516,8 +594,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 if exec_price > 0.0 {
                     match oms.process_exit_signal(&exit_signal, exec_price, &simulator).await {
                         Ok(ack) => {
-                            info!("TIME EXIT submitted: {} {} on {:?} @ ${:.4}",
-                                exit_signal.side, exit_signal.symbol, exit_signal.target_venue, exec_price);
+                            info!("ORDER_EXIT: {} {} | price={:.4} | id={}",
+                                exit_signal.side, exit_signal.symbol, exec_price, ack.order_id);
                         }
                         Err(e) => {
                             warn!("TIME EXIT rejected: {}", e);
@@ -529,9 +607,40 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             last_heartbeat = std::time::Instant::now();
         }
 
+        // Hot-Reload Configuration (every 15s)
+        if last_config_check.elapsed().as_secs() >= 15 {
+            last_config_check = std::time::Instant::now();
+            if let Ok(new_settings) = Settings::load() {
+                // Update strategy engines
+                oms.update_strategy_settings(new_settings.strategy.clone());
+                pipeline.update_settings(new_settings.strategy.clone());
+                
+                // Optional: Update risk settings if needed
+                // oms.update_risk(new_settings.risk.clone());
+                
+                info!("CONFIGURATION_RELOAD: Successfully updated strategy parameters from 'settings.toml'");
+            }
+        }
+
+        // Process asynchronous fills from PaperSimulator (LIMIT ORDERS)
+        if let Ok(fill) = fill_rx.try_recv() {
+            if let Some(tp_order) = oms.process_fill(&fill) {
+                let tp_price = tp_order.price.unwrap_or(0.0);
+                info!("ENTRY FILLED: Submitting TP Limit for {} {} @ {:.4}", 
+                    tp_order.symbol, tp_order.side, tp_price);
+                
+                match simulator.submit_order(&tp_order).await {
+                    Ok(ack) => { 
+                        info!("TP_SUBMITTED: {} {} | price={:.4} | id={}",
+                            tp_order.side, tp_order.symbol, tp_price, ack.order_id);
+                        *symbol_fills.entry(tp_order.symbol.0.clone()).or_insert(0) += 1; 
+                    }
+                    Err(e) => { warn!("TP Order rejected: {}", e); }
+                }
+            }
+        }
+
         // Yield to scheduler — avoid blocking the async runtime.
-        // On a dedicated hot-path OS thread, this would be std::hint::spin_loop().
-        // (Issue 11: replaced sleep with yield_now for lower latency)
         tokio::task::yield_now().await;
     }
 

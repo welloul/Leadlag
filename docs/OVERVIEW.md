@@ -100,26 +100,34 @@ hysteresis_buffer = 0.10    # Margin to consider a flip
 window_size_ticks = 256     # Ring buffer size (must be power of 2)
 ```
 
-## Trend-Following Entry/Exit Logic
+## Passive Market-Making Logic (v0.2.0)
 
-### Entry (Directional)
-```
-IF Lead_Price > Lag_Price:
-    BUY on Laggard (expect catch-up)
-ELSE:
-    SELL on Laggard (expect catch-down)
-```
+### Entry (Post-Only)
+The bot no longer "takes" liquidity. Upon identifying an impulse-OBI convergence, it calculates the **Mid-Price** and places a **Post-Only Limit Order** on the laggard venue.
 
-### Exit (Leader Reversal)
 ```
-IF Lead shows reversal signal:
-    MARKET EXIT on Laggard immediately
+IF Conviction == HIGH:
+    Target_Price = (Bid + Ask) / 2
+    Place POST-ONLY LIMIT at Target_Price
 ```
 
-**Reversal Detection:**
-- Lead price crosses back over VWAP
-- Lead-Lag correlation R flips negative
-- Hysteresis detects new lead (role flip)
+### Automated Take-Profit (TP)
+To capture the spread efficiently, the OMS generates a secondary **Take-Profit Limit Order** immediately upon entry fill.
+
+```
+TP_Price = Entry_Price + (13.0 bps * Direction)
+Place LIMIT at TP_Price
+```
+
+### Alpha Decay Exit (Time-Based)
+If the laggard price does not catch up to the leader within the identified alpha window, the position is liquidated using an **IOC (Immediate or Cancel)** market order. The timeout is symbol-specific, derived from alpha decay telemetry:
+
+- **Fast Alpha (e.g., ADA, BCH)**: 1.0s timeout
+- **Standard Alpha (Default)**: 1.5s timeout
+- **Lazy Alpha (e.g., TON, SUI)**: 2.5s timeout
+
+## Alpha Decay Telemetry
+The v0.2.0 engine instruments every leader impulse and tracks the exact wall-clock duration until the laggard price converges. This "Decay Probe" data is used to optimize the `symbol_timeouts` in the configuration.
 
 ## Order Book Imbalance (OBI) Fusion
 

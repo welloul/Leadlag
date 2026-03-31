@@ -1,10 +1,10 @@
 
-## System Overview (v0.1.5)
+## System Overview (v0.2.0 — MAKER ONLY)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                           TokioParasite v0.1.4                                  │
-│                     Lead-Lag Arbitrage Engine                                    │
+│                           TokioParasite v0.2.0                                  │
+│                     Lead-Lag Arbitrage Engine (MAKER ONLY)                      │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
 │  ┌─────────────────────────────────────────────────────────────────────────┐   │
@@ -22,28 +22,24 @@
 │  ┌─────────────────────────────────────────────────────────────────────────┐   │
 │  │                      MAIN LOOP (Async Tokio Task)                        │   │
 │  │                                                                          │   │
-│  │  ┌───────────────── ENTRY LOGIC (v0.1.5) ─────────────────────────────┐  │   │
+│  │  ┌───────────────── ENTRY LOGIC (v0.2.0 MAKER) ─────────────────────────┐  │   │
 │  │  │                                                                    │  │   │
-│  │  │  Impulse path:                                                     │  │   │
-│  │  │  ├─ Freshness gate (400ms local)                                   │  │   │
-│  │  │  ├─ Warmup gate (both trackers init + warmed)                      │  │   │
-│  │  │  ├─ Sanity check (delta < 500 bps)                                 │  │   │
-│  │  │  ├─ Lag check (other delta < 1.0 bps)                              │  │   │
-│  │  │  ├─ Momentum filter (current delta agrees with venue-specific previous)│  │   │
-  │  │  ├─ Edge check (5 bps fees-aware, direction-normalized)            │  │   │
-│  │  │  └─ Cooldown (200ms per symbol+side)                               │  │   │
+│  │  │  Impulse + OBI Convergence ──▶ CALC MID PRICE ──▶ POST-ONLY LIMIT  │  │   │
 │  │  │                                                                    │  │   │
-│  │  │  OBI path:                                                         │  │   │
-│  │  │  ├─ Weighted OBI (depth-weighted, top levels dominate)             │  │   │
-│  │  │  ├─ Time-based persistence (30ms wall-clock, not count-based)       │  │   │
-│  │  │  └─ Edge check (same fees-aware threshold)                         │  │   │
+│  │  │  FILL EVENT ──▶ AUTOMATED TAKE-PROFIT (+13.0 bps)                  │  │   │
 │  │  │                                                                    │  │   │
-│  │  │  Position cap: $100 per (venue, symbol), direction-aware           │  │   │
-│  │  │  Book age gate: 400ms hard reject                                  │  │   │
-│  │  │  Conservative fill: 50% of best level size                        │  │   │
+│  │  │  ALPHA DECAY TIMEOUT ──▶ MARKET EXIT (IOC)                         │  │   │
 │  │  └────────────────────────────────────────────────────────────────────┘  │   │
 │  │                                                                          │   │
-│  │  signal → oms.process_signal() → PaperSimulator                         │   │
+│  │  OMS GATES (v0.2.0):                                                     │   │
+│  │  ├─ Cooldown: 200ms per (symbol, side)                                   │   │
+│  │  ├─ Position cap: $100 per (venue, symbol)                               │   │
+│  │  ├─ Maker check: Mid-price calculation + Post-Only tag                   │   │
+│  │  ├─ Take-Profit: Auto-submit at +13 bps upon entry fill                  │   │
+│  │  ├─ Tiered Exit: symbol_timeouts[sym] (1000ms - 2500ms)                  │   │
+│  │  └─ Hot-Reload: 15s config watcher sync                                  │   │
+│  │                                                                          │   │
+│  │  signal → oms.process_signal() → PaperSimulator                          │   │
 │  └─────────────────────────────────────────────────────────────────────────┘   │
 │                                                     │                          │
 │                                                     ▼                          │
@@ -59,71 +55,41 @@
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Data Flow: Dual-Strategy Architecture
+## Data Flow: Passive Lead-Lag Architecture (v0.2.0)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                         DUAL-STRATEGY DATA FLOW                                 │
+│                         MAKER STRATEGY DATA FLOW                                │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
-│  CORRELATION-HYSTERESIS PATH:                                                   │
-│  ─────────────────────────────                                                  │
-│  Tick A ──┐                                                                     │
-│           ├──▶ TimeGrid.ingest_tick() ──▶ AlignedPair ──▶ process_pair()       │
-│  Tick B ──┘     (forward-fill)              (price_a,       │                  │
-│                                              price_b)        │                  │
-│                                                              ▼                  │
-│                                                   CrossCorrelator.push()        │
-│                                                              │                  │
-│                                                              ▼                  │
-│                                                   find_best_lag(-10, 10)        │
-│                                                              │                  │
-│                                                              ▼                  │
-│                                                   Hysteresis.update(r_a, r_b)   │
-│                                                              │                  │
-│                                                   ┌──────────┴──────────┐       │
-│                                                   │  Role flip?         │       │
-│                                                   │  best_r >= 0.85?    │       │
-│                                                   └──────────┬──────────┘       │
-│                                                              │ Yes              │
-│                                                              ▼                  │
-│                                                        TradeSignal              │
-│                                                                                 │
-│  IMPULSE-OBI PATH (v0.1.5):                                                    │
+│  IMPULSE-OBI PATH (v0.2.0):                                                     │
 │  ──────────────────────────                                                     │
-│  Tick A ──▶ process_tick() ──▶ ImpulseDetector.process_tick()                   │
+│  Tick A ──▶ process_tick() ──▶ Alpha Decay Probes (v0.2.0)                      │
 │                                    │                                            │
-│                                    ├─ Route to correct tracker (venue-based)    │
-│                                    ├─ Local freshness check (400ms)             │
-│                                    ├─ Both trackers init + warmed up?           │
-│                                    ├─ Sanity: delta < 500 bps?                  │
+│                                    ├─ Measure wall-clock between A move and B   │
+│                                    ├─ Measure lead-lag edge window (latency)    │
+│                                    └─ Output: Per-symbol convergence metric     │
+│                                                                                 │
+│  Tick B ──▶ ImpulseDetector.process_tick()                                      │
+│                                    │                                            │
 │                                    ├─ Lag: other |delta| < 1.0 bps?             │
-│                                    ├─ Edge: cross-venue spread ≥ 5 bps?         │
+│                                    ├─ Edge: cross-venue spread ≥ 4.5 bps?       │
 │                                    └─ If all pass → ImpulseSignal               │
 │                                                                                 │
-│  Book A ──▶ process_book() ──▶ ObiDivergenceDetector.process_book()             │
+│  Book A/B ──▶ process_book() ──▶ ObiDivergenceDetector                          │
 │                                    │                                            │
 │                                    ├─ Depth-weighted OBI (1/(i+1) weights)      │
-│                                    ├─ Time-based persistence (30ms wall-clock)  │
-│                                    ├─ Divergence: both positive, one stronger?  │
 │                                    └─ If yes → ObiSignal                        │
 │                                                                                 │
 │  ImpulseObiEngine combines:                                                     │
-│  ├─ Edge check (5 bps direction-normalized)                                    │
-│  ├─ Pending impulse + incoming OBI → HIGH conviction                           │
-│  ├─ Pending OBI + incoming impulse → HIGH conviction                           │
-│  ├─ Impulse only → MEDIUM conviction                                           │
-│  ├─ OBI only → MEDIUM conviction                                               │
-│  └─ Timeout (250ms) clears pending signals                                     │
+│  ├─ Pending impulse + incoming OBI → HIGH conviction                            │
+│  └─ Timeout (250ms) clears pending signals                                      │
 │                                                                                 │
-│  OMS gates:                                                                    │
-│  ├─ Cooldown: 200ms per (symbol, side)                                         │
-│  ├─ Position cap: $100 per (venue, symbol), direction-aware                    │
-│  ├─ Impulse-based sizing: 0.5–2× base size proportional to impulse magnitude  │
-│  ├─ Book age gate: 400ms hard reject                                           │
-│  ├─ Conservative fill: 50% of best level                                       │
-│  ├─ Exit timeout: 5s for dead positions                                        │
-│  └─ TTL: 500ms signal expiry                                                   │
+│  OMS EXECUTION (THE MAKER SHIFT):                                               │
+│  ├─ ENTRY (Post-Only): Place limit at mid-price.                                │
+│  ├─ TP (Limit): Fill trigger -> Auto-Submit TP at entry + 13bps.                │
+│  ├─ SL (Time-based): Loop checks age vs symbol_timeouts.                        │
+│  └─ RELOAD: 15s heart-beat filesystem configuration refresh.                    │
 │                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
@@ -189,6 +155,7 @@
 │  │ If new candidate appears (different from previous candidate):           │   │
 │  │   - candidate_streak = 1 (reset to 1, not 0)                           │   │
 │  │   - candidate_lead = new candidate                                      │   │
+│  │                                                                         │   │
 │  └─────────────────────────────────────────────────────────────────────────┘   │
 │                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
@@ -199,6 +166,7 @@
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
 │                         HOT PATH MEMORY LAYOUT                                  │
+│                 (Zero-Allocation Runtime Engineering)                           │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
 │  RingBuffer<256> (2088 bytes, fits in 32 cache lines)                          │
@@ -237,19 +205,6 @@
 │  │ 0x0020 │ candidate_streak│ 4 bytes │ Consecutive dominance count        │   │
 │  │ 0x0028 │ threshold_margin│ 8 bytes │ Stored but unused (streak-based)   │   │
 │  │ 0x0030 │ min_consecutive │ 4 bytes │ Required streak length             │   │
-│  └─────────────────────────────────────────────────────────────────────────┘   │
-│                                                                                 │
-│  IngestResult (5200 bytes, stack-allocated)                                     │
-│  ┌─────────────────────────────────────────────────────────────────────────┐   │
-│  │ pairs: [AlignedPair; 64]   (5120 bytes)    │ Fixed-size array           │   │
-│  │ count: usize               (8 bytes)        │ Valid pair count           │   │
-│  └─────────────────────────────────────────────────────────────────────────┘   │
-│                                                                                 │
-│  PendingSignal (17 bytes, Copy-friendly, no heap allocation)                    │
-│  ┌─────────────────────────────────────────────────────────────────────────┐   │
-│  │ venue: VenueId        (1 byte)     │ Target venue                       │   │
-│  │ side: OrderSide       (1 byte)     │ Buy or Sell                        │   │
-│  │ timestamp_ns: u64     (8 bytes)    │ Signal timestamp                   │   │
 │  └─────────────────────────────────────────────────────────────────────────┘   │
 │                                                                                 │
 │  TOTAL HOT PATH MEMORY: ~11.5KB (180 cache lines)                              │
@@ -312,57 +267,6 @@
 └─────────────────────────────────────────────────────────────────────────────────┘
 ```
 
-## Component Dependencies
-
-```
-┌─────────────────────────────────────────────────────────────────────────────────┐
-│                         COMPONENT DEPENDENCY GRAPH                              │
-├─────────────────────────────────────────────────────────────────────────────────┤
-│                                                                                 │
-│                              ┌─────────────┐                                    │
-│                              │   main.rs   │                                    │
-│                              │ (Orchestrator)                                   │
-│                              └──────┬──────┘                                    │
-│                                     │                                           │
-│                    ┌────────────────┼────────────────┐                          │
-│                    │                │                │                          │
-│                    ▼                ▼                ▼                          │
-│             ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                  │
-│             │   config    │  │    eal      │  │   logging   │                  │
-│             │  (Settings) │  │  (Traits)   │  │  (tracing)  │                  │
-│             └─────────────┘  └──────┬──────┘  └─────────────┘                  │
-│                                     │                                           │
-│                    ┌────────────────┼────────────────┐                          │
-│                    │                │                │                          │
-│                    ▼                ▼                ▼                          │
-│             ┌─────────────┐  ┌─────────────┐  ┌─────────────┐                  │
-│             │   signal    │  │    oms      │  │    sim      │                  │
-│             │ (Hot Path)  │  │  (Risk)     │  │ (Paper)     │                  │
-│             └──────┬──────┘  └──────┬──────┘  └──────┬──────┘                  │
-│                    │                │                │                          │
-│                    │                ▼                │                          │
-│                    │         ┌─────────────┐         │                          │
-│                    │         │   persist   │         │                          │
-│                    │         │ (Telemetry) │         │                          │
-│                    │         └─────────────┘         │                          │
-│                    │                                  │                          │
-│  ─────────────────────────────────────────────────────────────────────────────  │
-│                                                                                 │
-│  DEPENDENCY RULES:                                                              │
-│  ┌─────────────────────────────────────────────────────────────────────────┐   │
-│  │ • config: No dependencies (loaded first)                                │   │
-│  │ • eal: Depends on config only                                           │   │
-│  │ • signal: Depends on eal::types only (no async)                         │   │
-│  │ • oms: Depends on eal, config                                           │   │
-│  │ • sim: Depends on eal, config                                           │   │
-│  │ • persist: Depends on eal::types                                        │   │
-│  │ • logging: No dependencies                                              │   │
-│  │ • main: Depends on all modules                                          │   │
-│  └─────────────────────────────────────────────────────────────────────────┘   │
-│                                                                                 │
-└─────────────────────────────────────────────────────────────────────────────────┘
-```
-
 ## Latency Budget
 
 ```
@@ -385,17 +289,17 @@
 │  ─────────────────────────────┼──────────────┼───────────┼──────────────────── │
 │  TOTAL                        │ ~2500        │ ~834ns    │ 8.3%                │
 │                                                                                 │
-│  IMPULSE-OBI PATH:                                                              │
-│  ─────────────────                                                              │
+│  IMPULSE-OBI PATH (MAKER):                                                      │
+│  ─────────────────────────                                                      │
 │  Component                    │ Cycles @3GHz │ Time      │ % of Budget         │
 │  ─────────────────────────────┼──────────────┼───────────┼──────────────────── │
 │  1. Tick ingestion            │ ~50          │ ~17ns     │ 0.2%                │
-│  2. MidpriceTracker update    │ ~30          │ ~10ns     │ 0.1%                │
-│  3. Delta bps calculation     │ ~20          │ ~7ns      │ 0.1%                │
+│  2. Alpha Probe (telemetry)   │ ~100         │ ~33ns     │ 0.3%                │
+│  3. MidpriceTracker update    │ ~30          │ ~10ns     │ 0.1%                │
 │  4. Threshold comparison      │ ~10          │ ~3ns      │ 0.03%               │
-│  5. PendingSignal store       │ ~5           │ ~2ns      │ 0.02%               │
+│  5. OMS Limit Calculation     │ ~100         │ ~33ns     │ 0.3%                │
 │  ─────────────────────────────┼──────────────┼───────────┼──────────────────── │
-│  TOTAL (impulse only)         │ ~115         │ ~39ns     │ 0.4%                │
+│  TOTAL (impulse only)         │ ~290         │ ~96ns     │ 1.0%                │
 │                                                                                 │
 │  Component                    │ Cycles @3GHz │ Time      │ % of Budget         │
 │  ─────────────────────────────┼──────────────┼───────────┼──────────────────── │
@@ -406,7 +310,7 @@
 │  ─────────────────────────────┼──────────────┼───────────┼──────────────────── │
 │  TOTAL (OBI only)             │ ~185         │ ~62ns     │ 0.6%                │
 │                                                                                 │
-│  HEADROOM: 91.4% (9.1µs available for OMS, network, etc.)                      │
+│  HEADROOM: 90% (9µs available for OMS, network, etc.)                          │
 │                                                                                 │
 │  ─────────────────────────────────────────────────────────────────────────────  │
 │                                                                                 │
@@ -420,4 +324,3 @@
 │  └─────────────────────────────────────────────────────────────────────────┘   │
 │                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
-```

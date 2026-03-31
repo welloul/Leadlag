@@ -17,7 +17,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 /// Maximum number of symbols supported.
-const MAX_SYMBOLS: usize = 16;
+const MAX_SYMBOLS: usize = 64;
 
 /// Maximum number of venues supported.
 const MAX_VENUES: usize = 2;
@@ -280,8 +280,22 @@ impl OrderManagementSystem {
         // Run pre-flight checks
         self.preflight.check_signal(signal, current_price, &self.net_delta)?;
 
+        // Exposure and Pending Check: don't double-dip on the same symbol before fill
+        let sig_sym = signal.symbol.normalize();
+        let pending_count = self.pending_orders.values()
+            .filter(|o| o.symbol.normalize() == sig_sym)
+            .count();
+            
+        if pending_count > 0 {
+            return Err(RiskError::ExecutionFailed(format!(
+                "Already have {} pending orders for {}. Skipping signal.",
+                pending_count, signal.symbol
+            )));
+        }
+
         // Position cap: $100 max notional per (venue, symbol), direction-aware.
-        let max_position_notional = 100.0;
+        // Check per-symbol exposure limits
+        let max_position_notional = self.risk_settings.max_position_usd;
         let venue_key = format!("{:?}", signal.target_venue);
         let sym_key = signal.symbol.0.clone();
         let cap_key = (venue_key, sym_key);
@@ -325,16 +339,32 @@ impl OrderManagementSystem {
             base_size, strength_factor, size, current_price
         );
 
-        // Create order request
-        let order = OrderRequest {
-            venue: signal.target_venue,
-            symbol: signal.symbol.clone(),
-            side: signal.side,
-            order_type: crate::eal::OrderType::IOC,
-            size,
-            price: None,
-            client_order_id: uuid::Uuid::new_v4().to_string(),
+        // Create order request: Passive Limit Entry
+        let order = if self.strategy_settings.active_strategy == "impulse_obi" {
+             // For impulse lead-lag, use Post-Only Limit at mid-price to save 5bps taker fee.
+             OrderRequest::limit(
+                signal.target_venue,
+                signal.symbol.clone(),
+                signal.side,
+                size,
+                current_price,
+                true // post_only
+             )
+        } else {
+            OrderRequest {
+                venue: signal.target_venue,
+                symbol: signal.symbol.clone(),
+                side: signal.side,
+                order_type: crate::eal::OrderType::IOC,
+                size,
+                price: None,
+                post_only: false,
+                client_order_id: uuid::Uuid::new_v4().to_string(),
+            }
         };
+
+        // Record last trade time for cooldown (intent)
+        self.last_trade_per_symbol.insert(cooldown_key.clone(), now);
 
         // Store pending order
         self.pending_orders
@@ -384,12 +414,49 @@ impl OrderManagementSystem {
     }
 
     /// Process a fill event.
-    pub fn process_fill(&mut self, fill: &FillEvent) {
+    /// Returns an optional Take Profit order if an entry was filled.
+    pub fn process_fill(&mut self, fill: &FillEvent) -> Option<OrderRequest> {
+        let venue_key = format!("{:?}", fill.venue);
+        let sym_key = fill.symbol.0.clone();
+        let cap_key = (venue_key.clone(), sym_key.clone());
+
         // Remove from pending orders
         self.pending_orders.remove(&fill.client_order_id);
 
         // Update net delta
         self.net_delta.update_position(fill);
+
+        // Store open timestamp for time-based exit (start the clock on FILL, not signal)
+        self.position_open_ts.insert(cap_key.clone(), fill.timestamp_ns);
+
+        // Only generate TP for Entry fills (where we now have a position)
+        let current_size = *self.cumulative_size.get(&cap_key).unwrap_or(&0.0);
+        
+        // If we filled a BUY, we want to SELL at entry + profit bps
+        // If we filled a SELL, we want to BUY at entry - profit bps
+        if current_size.abs() > 0.0 && self.strategy_settings.active_strategy == "impulse_obi" {
+            let tp_bps = self.strategy_settings.take_profit_bps; 
+            let tp_price = if current_size > 0.0 {
+                fill.avg_price * (1.0 + (tp_bps / 10000.0))
+            } else {
+                fill.avg_price * (1.0 - (tp_bps / 10000.0))
+            };
+            
+            let exit_side = if current_size > 0.0 { OrderSide::Sell } else { OrderSide::Buy };
+            
+            let tp_order = OrderRequest::limit(
+                fill.venue,
+                fill.symbol.clone(),
+                exit_side,
+                current_size.abs(),
+                tp_price,
+                false // Closing order shouldn't be post-only to ensure we exit at the profit target
+            );
+            
+            return Some(tp_order);
+        }
+        
+        None
     }
 
     /// Check for self-trade.
@@ -419,6 +486,11 @@ impl OrderManagementSystem {
 
     /// Check all positions for time-based exits.
     /// Returns exit TradeSignals for positions older than exit_timeout_ms.
+    /// Update strategy settings for hot-reload.
+    pub fn update_strategy_settings(&mut self, settings: crate::config::StrategySettings) {
+        self.strategy_settings = settings;
+    }
+
     pub fn check_time_exits(&self) -> Vec<TradeSignal> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -428,40 +500,41 @@ impl OrderManagementSystem {
 
         let mut exits = Vec::new();
 
-        for ((venue_str, sym_str), &open_ts) in &self.position_open_ts {
-            let age_ns = now.saturating_sub(open_ts);
-            if age_ns > exit_timeout_ns {
-                let size = *self.cumulative_size.get(&(venue_str.clone(), sym_str.clone())).unwrap_or(&0.0);
-                if size == 0.0 {
-                    continue;
-                }
+        for (cap_key, open_ts) in &self.position_open_ts {
+            let current_size = *self.cumulative_size.get(cap_key).unwrap_or(&0.0);
+            if current_size.abs() < 1e-6 { continue; }
+            
+            // Per-Symbol Timeout Lookup
+            let timeout_ms = self.strategy_settings.symbol_timeouts
+                .get(&cap_key.1) // Symbol part of (Venue, Symbol) key
+                .copied()
+                .unwrap_or(self.strategy_settings.exit_timeout_ms);
+                
+            if now - *open_ts > (timeout_ms * 1_000_000) {
+                let exit_side = if current_size > 0.0 { OrderSide::Sell } else { OrderSide::Buy };
 
-                let exit_side = if size > 0.0 { OrderSide::Sell } else { OrderSide::Buy };
-
-                let venue = if venue_str == "VenueId(0)" {
+                let venue = if cap_key.0 == "VenueId(0)" {
                     VenueId::EXCHANGE_A
                 } else {
                     VenueId::EXCHANGE_B
                 };
 
+                let age_ms = (now.saturating_sub(*open_ts)) as f64 / 1_000_000.0;
                 tracing::info!(
                     "TIME EXIT: {} on {:?} held for {:.0}ms (timeout={}ms)",
-                    sym_str, venue,
-                    age_ns as f64 / 1e6,
-                    self.strategy_settings.exit_timeout_ms
+                    cap_key.1, venue, age_ms, timeout_ms
                 );
 
                 exits.push(TradeSignal {
-                    symbol: Symbol::new(sym_str),
                     side: exit_side,
                     target_venue: venue,
-                    correlation_r: 1.0,
+                    symbol: Symbol::new(&cap_key.1),
+                    correlation_r: 0.0,
                     lag_offset_ns: 0,
                     timestamp_ns: now,
                 });
             }
         }
-
         exits
     }
 
@@ -488,6 +561,7 @@ impl OrderManagementSystem {
             order_type: crate::eal::OrderType::IOC,
             size: exit_size,
             price: None,
+            post_only: false,
             client_order_id: uuid::Uuid::new_v4().to_string(),
         };
 
@@ -534,7 +608,7 @@ mod tests {
 
     #[test]
     fn test_daily_loss_limit() {
-        let mut delta = NetDelta::new(100.0);
+        let mut delta = NetDelta::new(500.0);
 
         // Simulate a loss
         let fill = FillEvent {

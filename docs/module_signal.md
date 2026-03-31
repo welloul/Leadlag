@@ -31,32 +31,20 @@ The signal module is responsible for detecting microsecond-level price impulses 
 ### ImpulseObiEngine (`impulse_obi.rs`)
 - **process_signal(signal: Signal) -> Option<Conviction>**
   - Input: Incoming ImpulseSignal or ObiSignal
-  - Output: HIGH/MEDIUM conviction if combination or solo thresholds met, with impulse-magnitude sizing
-  - Side effects: Manages pending signals with 250ms timeout, clears expired; sizes position 0.5–2× base proportional to impulse magnitude
-- **Key components:**
-  - Combination logic: HIGH if pending + incoming have matching sides
-  - Solo logic: MEDIUM for impulse-only or OBI-only signals
-  - Timeout: Wall-clock based expiry to prevent simulation drift
-  - Sizing: Impulse magnitude scales position size (capped at 2× max_notional)
+  - Output: HIGH/MEDIUM conviction if combination or solo thresholds met
+- **Conviction Logic (v0.2.0):**
+  - **HIGH**: Pending signal exists with the same side.
+  - **MEDIUM**: Solo impulse or solo OBI.
+  - **Alpha Decay Probes**: Instruments the leader move vs. laggard convergence window to derive optimal timeouts.
 
 ### Module Router (`mod.rs`)
-- **process_tick(tick: Arc<Tick>) -> Vec<Signal>**
-  - Routes ticks to per-symbol ImpulseDetector instances
-- **process_book(book: Arc<BookUpdate>) -> Vec<Signal>**
-  - Routes books to per-symbol ObiDivergenceDetector instances
-- **combine_signals(signals: Vec<Signal>) -> Vec<Conviction>**
-  - Passes signals through per-symbol ImpulseObiEngine instances (8 independent engines for 8 symbols)
+- **update_settings(settings: StrategySettings)**: Propagates live `settings.toml` updates during 15-second heart-beat hot-reloads. Reinitializes thresholds and per-symbol conviction gates.
 
-## The "Hurdles"
-
-### Fixed Bugs (v0.1.4-0.1.5)
-- **Freshness gate drift**: Exchange timestamps unreliable; fixed by using wall-clock comparisons (was causing 100% stale rejections in simulation).
-- **Impossible HIGH convictions**: Venue matching requirement made combinations impossible; fixed to side-only matching.
-- **Simulation expiry breakage**: Exchange timestamp expiry broke in stale clocks; fixed with wall-clock stored_at_ns.
-- **Cross-symbol pollution**: Single engine instance mixed symbols; fixed with per-symbol routing (8 independent engines).
-- **Momentum routing error**: B-venue impulses checked A-tracker; fixed to venue-specific trackers.
-- **OBI persistence drift**: Used exchange timestamps; fixed to wall-clock now_ns().
-- **Trending market misses**: Neutral-threshold OBI missed divergences in uptrends; fixed to both-positive condition.
+## Fixed Bugs (v0.2.0)
+- **Starknet/ZEC Drift**: Fixed symbol normalization that caused cross-pair signal leaks; unified symbol keys in metadata.
+- **Asymmetric Latency**: Hyperliquid l2Book lag addressed with wall-clock OBI persistence (30ms).
+- **Conviction Match Failure**: Relaxed combination logic to side-only matching (previously required venue matching, which were disjoint).
+- **Stale Settings**: Replaced static configuration with dynamic reloader to avoid bot restarts during parameter tuning.
 
 ### Remaining Technical Debt
 - **Race conditions**: Per-symbol state isolation may have concurrent access issues under high load (needs atomic guards).

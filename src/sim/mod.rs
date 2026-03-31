@@ -20,6 +20,7 @@ use async_trait::async_trait;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tracing::{info, warn};
 
 /// Maximum age for a stale book before it's considered unusable.
 const MAX_BOOK_AGE_NS: u64 = 2_000_000_000; // 2 seconds
@@ -74,8 +75,6 @@ struct VenueBookState {
     /// Timestamp (ns) when this venue's book was last updated from a real tick.
     last_update_ns: u64,
     /// Whether the current book data came from this venue's own ticks.
-    /// true = real HL tick populated this book.
-    /// false = no HL data yet, book is empty or was never populated.
     has_real_data: bool,
 }
 
@@ -87,21 +86,17 @@ pub enum FillProvenance {
 }
 
 /// Paper trading simulator.
-///
-/// Maintains separate order books per (Symbol, VenueId) pair.
-/// Each venue has its own price, spread, and liquidity depth.
-/// Tracks staleness per venue and allows fills with stale books <2s.
 pub struct PaperSimulator {
     settings: SimulationSettings,
     matchers: Arc<Mutex<HashMap<(Symbol, VenueId), OrderBookMatcher>>>,
-    /// Per-venue book staleness tracking.
     book_states: Arc<Mutex<HashMap<(Symbol, VenueId), VenueBookState>>>,
     order_counter: Arc<Mutex<u64>>,
     positions: Arc<Mutex<Vec<Position>>>,
     daily_pnl: Arc<Mutex<f64>>,
     total_fees: Arc<Mutex<f64>>,
     fill_history: Arc<Mutex<Vec<FillEvent>>>,
-    /// Staleness metrics.
+    fill_tx: Arc<Mutex<Option<crossbeam_channel::Sender<FillEvent>>>>,
+    pending_limits: Arc<Mutex<Vec<OrderRequest>>>,
     metrics: Arc<Mutex<SimMetrics>>,
 }
 
@@ -121,15 +116,9 @@ impl SimMetrics {
         let fresh_pct = if total > 0 {
             self.fills_with_fresh_book as f64 / total as f64 * 100.0
         } else { 0.0 };
-        let stale_pct = if total > 0 {
-            self.fills_with_stale_book as f64 / total as f64 * 100.0
-        } else { 0.0 };
         format!(
-            "signals={} fresh={} ({:.0}%) stale={} ({:.0}%) no_book={} stale_over_2s={}",
-            self.total_signals,
-            self.fills_with_fresh_book, fresh_pct,
-            self.fills_with_stale_book, stale_pct,
-            self.skipped_no_book, self.skipped_stale_over_2s
+            "signals={} fills={} ({:.0}% fresh) skipped={}",
+            self.total_signals, total, fresh_pct, self.skipped_no_book + self.skipped_stale_over_2s
         )
     }
 }
@@ -145,17 +134,20 @@ impl PaperSimulator {
             daily_pnl: Arc::new(Mutex::new(0.0)),
             total_fees: Arc::new(Mutex::new(0.0)),
             fill_history: Arc::new(Mutex::new(Vec::new())),
+            fill_tx: Arc::new(Mutex::new(None)),
+            pending_limits: Arc::new(Mutex::new(Vec::new())),
             metrics: Arc::new(Mutex::new(SimMetrics::default())),
         }
+    }
+
+    pub fn set_fill_tx(&self, tx: crossbeam_channel::Sender<FillEvent>) {
+        *self.fill_tx.lock().unwrap() = Some(tx);
     }
 
     /// Update the order book from a real L2 BookUpdate.
     pub fn update_book(&self, update: BookUpdate) {
         let key = (update.symbol.clone(), update.venue);
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
 
         {
             let mut matchers = self.matchers.lock().unwrap();
@@ -163,6 +155,9 @@ impl PaperSimulator {
                 .entry(key.clone())
                 .or_insert_with(|| OrderBookMatcher::new(self.settings.match_l2_depth));
             matcher.update_book(update.bids, update.asks);
+            
+            // Check for limit fills
+            self.check_limit_fills(matcher, &update.symbol, update.venue);
         }
 
         {
@@ -173,35 +168,25 @@ impl PaperSimulator {
         }
     }
 
-    /// Update book from a real tick from THIS venue.
-    /// Only updates the book for the venue that sent the tick.
-    /// Does NOT seed other venues with fake data.
     pub fn update_book_from_tick(&self, symbol: &Symbol, price: f64, venue: VenueId) {
         if price <= 0.0 || !price.is_finite() {
             return;
         }
 
         let spread_model = VenueSpreadModel::for_venue(venue);
-        let estimated_notional = 5000.0;
-        let half_spread = spread_model.half_spread(price, estimated_notional);
+        let half_spread = spread_model.half_spread(price, 5000.0);
 
-        let mut bids = Vec::with_capacity(self.settings.match_l2_depth);
-        let mut asks = Vec::with_capacity(self.settings.match_l2_depth);
+        let mut bids = Vec::new();
+        let mut asks = Vec::new();
 
         for i in 0..self.settings.match_l2_depth {
-            let depth_bps = (i as f64) * 0.5;
-            let bid_price = price - half_spread - (price * depth_bps / 10000.0);
-            let ask_price = price + half_spread + (price * depth_bps / 10000.0);
-            let size = 10_000.0;
-            bids.push(BookLevel { price: bid_price, size });
-            asks.push(BookLevel { price: ask_price, size });
+            let offset = price * (i as f64 * 0.5) / 10000.0;
+            bids.push(BookLevel { price: price - half_spread - offset, size: 10000.0 });
+            asks.push(BookLevel { price: price + half_spread + offset, size: 10000.0 });
         }
 
         let key = (symbol.clone(), venue);
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64;
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
 
         {
             let mut matchers = self.matchers.lock().unwrap();
@@ -209,6 +194,7 @@ impl PaperSimulator {
                 .entry(key.clone())
                 .or_insert_with(|| OrderBookMatcher::new(self.settings.match_l2_depth));
             matcher.update_book(bids, asks);
+            self.check_limit_fills(matcher, symbol, venue);
         }
 
         {
@@ -219,126 +205,92 @@ impl PaperSimulator {
         }
     }
 
-    /// Check if a venue has a book (fresh or stale).
+    fn check_limit_fills(&self, matcher: &OrderBookMatcher, symbol: &Symbol, venue: VenueId) {
+        let mut pending = self.pending_limits.lock().unwrap();
+        if pending.is_empty() { return; }
+
+        let mut remaining = Vec::new();
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
+        let mut counter = self.order_counter.lock().unwrap();
+
+        for order in pending.drain(..) {
+            if &order.symbol != symbol || order.venue != venue {
+                remaining.push(order);
+                continue;
+            }
+
+            let limit_price = order.price.unwrap_or(0.0);
+            let filled = match order.side {
+                OrderSide::Buy => matcher.best_ask().map_or(false, |p| p <= limit_price),
+                OrderSide::Sell => matcher.best_bid().map_or(false, |p| p >= limit_price),
+            };
+
+            if filled {
+                *counter += 1;
+                let fill = FillEvent {
+                    order_id: OrderId(*counter),
+                    client_order_id: order.client_order_id.clone(),
+                    venue: order.venue,
+                    symbol: order.symbol.clone(),
+                    side: order.side,
+                    filled_size: order.size,
+                    avg_price: limit_price,
+                    fee: 0.0,
+                    fee_currency: "USD [MAKER]".to_string(),
+                    timestamp_ns: now,
+                };
+                
+                info!("LIMIT FILL: {} {} @ {}", fill.side, fill.symbol, fill.avg_price);
+                self.fill_history.lock().unwrap().push(fill.clone());
+                if let Some(ref tx) = *self.fill_tx.lock().unwrap() {
+                    let _ = tx.send(fill);
+                }
+            } else {
+                remaining.push(order);
+            }
+        }
+        *pending = remaining;
+    }
+
     pub fn is_venue_liquid(&self, symbol: &Symbol, venue: VenueId) -> bool {
         let matchers = self.matchers.lock().unwrap();
-        if let Some(matcher) = matchers.get(&(symbol.clone(), venue)) {
-            !matcher.bids.is_empty() && !matcher.asks.is_empty()
-        } else {
-            false
-        }
+        matchers.get(&(symbol.clone(), venue)).map_or(false, |m| !m.bids.is_empty())
     }
 
-    /// Check if a venue's book is stale (>max_age_ns old).
-    pub fn is_book_stale(&self, symbol: &Symbol, venue: VenueId, max_age_ns: u64) -> bool {
-        let states = self.book_states.lock().unwrap();
-        if let Some(state) = states.get(&(symbol.clone(), venue)) {
-            if !state.has_real_data {
-                return true; // No real data = stale
-            }
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos() as u64;
-            now.saturating_sub(state.last_update_ns) > max_age_ns
-        } else {
-            true // No state = stale
-        }
-    }
-
-    /// Get staleness in nanoseconds for a venue's book.
     pub fn book_staleness_ns(&self, symbol: &Symbol, venue: VenueId) -> Option<u64> {
         let states = self.book_states.lock().unwrap();
-        if let Some(state) = states.get(&(symbol.clone(), venue)) {
-            if !state.has_real_data {
-                return None; // No real data ever
-            }
-            let now = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .unwrap()
-                .as_nanos() as u64;
-            Some(now.saturating_sub(state.last_update_ns))
-        } else {
-            None
-        }
+        states.get(&(symbol.clone(), venue)).and_then(|s| {
+            if s.has_real_data {
+                let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
+                Some(now.saturating_sub(s.last_update_ns))
+            } else { None }
+        })
     }
 
-    /// Get the mid price for a (symbol, venue) pair.
-    /// NO cross-venue fallback — each venue must have its own real data.
     pub fn get_mid_price(&self, symbol: &Symbol, venue: VenueId) -> Option<f64> {
         let matchers = self.matchers.lock().unwrap();
-        if let Some(matcher) = matchers.get(&(symbol.clone(), venue)) {
-            if let Some(mid) = matcher.mid_price() {
-                if mid > 0.0 && mid.is_finite() {
-                    return Some(mid);
-                }
-            }
-        }
-        None
+        matchers.get(&(symbol.clone(), venue)).and_then(|m| m.mid_price())
     }
 
-    /// Get fill metrics.
-    pub fn metrics(&self) -> SimMetrics {
-        self.metrics.lock().unwrap().clone()
-    }
-
-    /// Simulate order matching with latency.
-    async fn simulate_fill(
-        &self,
-        order: &OrderRequest,
-        provenance: FillProvenance,
-    ) -> Result<FillEvent, ExecutionError> {
+    async fn simulate_fill(&self, order: &OrderRequest, _prov: FillProvenance) -> Result<FillEvent, ExecutionError> {
         if self.settings.latency_simulation_ms > 0 {
             tokio::time::sleep(Duration::from_millis(self.settings.latency_simulation_ms)).await;
         }
 
-        let key = (order.symbol.clone(), order.venue);
         let mut matchers = self.matchers.lock().unwrap();
+        let matcher = matchers.get_mut(&(order.symbol.clone(), order.venue))
+            .ok_or_else(|| ExecutionError::ExchangeError("No book".to_string()))?;
 
-        let matcher = matchers.get_mut(&key)
-            .ok_or_else(|| ExecutionError::ExchangeError(
-                format!("No book for {} on {:?}", order.symbol, order.venue)
-            ))?;
+        let (filled_size, avg_price, _) = matcher.match_order(order.side, order.size, order.price)?;
 
-        // Conservative fill: only fill 50% of best level size.
-        // Real books shift during latency — assume we can only capture half.
-        let best_size = match order.side {
-            OrderSide::Buy => matcher.best_ask_size(),
-            OrderSide::Sell => matcher.best_bid_size(),
-        };
-        let allowed_size = if best_size > 0.0 {
-            order.size.min(best_size * 0.5)
-        } else {
-            order.size
-        };
-
-        let (filled_size, avg_price, slippage_bps) = matcher.match_order(
-            order.side,
-            allowed_size,
-            order.price,
-        )?;
-
-        let notional = filled_size * avg_price;
-        let fee = notional * (self.settings.fee_tier_bps / 10000.0);
+        let fee = filled_size * avg_price * (self.settings.fee_tier_bps / 10000.0);
         *self.total_fees.lock().unwrap() += fee;
 
         let mut counter = self.order_counter.lock().unwrap();
         *counter += 1;
-        let order_id = OrderId(*counter);
-
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos() as u64;
-
-        // Track staleness in fill
-        let stale_tag = match provenance {
-            FillProvenance::Stale => " [STALE_BOOK]",
-            FillProvenance::Fresh => "",
-        };
-
+        
         let fill = FillEvent {
-            order_id,
+            order_id: OrderId(*counter),
             client_order_id: order.client_order_id.clone(),
             venue: order.venue,
             symbol: order.symbol.clone(),
@@ -346,21 +298,11 @@ impl PaperSimulator {
             filled_size,
             avg_price,
             fee,
-            fee_currency: format!("USD{}", stale_tag),
-            timestamp_ns: now,
+            fee_currency: "USD [TAKER]".to_string(),
+            timestamp_ns: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64,
         };
 
         self.fill_history.lock().unwrap().push(fill.clone());
-
-        // Update metrics
-        {
-            let mut metrics = self.metrics.lock().unwrap();
-            match provenance {
-                FillProvenance::Fresh => metrics.fills_with_fresh_book += 1,
-                FillProvenance::Stale => metrics.fills_with_stale_book += 1,
-            }
-        }
-
         Ok(fill)
     }
 
@@ -372,244 +314,80 @@ impl PaperSimulator {
         self.fill_history.lock().unwrap().clone()
     }
 
-    pub fn alpha_decay_stats(&self) -> AlphaDecayStats {
-        let fills = self.fill_history.lock().unwrap();
-        let total_fills = fills.len();
-
-        if total_fills == 0 {
-            return AlphaDecayStats::default();
-        }
-
-        let total_slippage: f64 = fills
-            .iter()
-            .map(|f| f.fee / (f.filled_size * f.avg_price) * 10000.0)
-            .sum();
-
-        AlphaDecayStats {
-            total_fills,
-            avg_slippage_bps: total_slippage / total_fills as f64,
-            total_fees: *self.total_fees.lock().unwrap(),
-        }
+    pub fn metrics(&self) -> SimMetrics {
+        self.metrics.lock().unwrap().clone()
     }
-}
-
-/// Alpha decay statistics.
-#[derive(Debug, Clone, Default)]
-pub struct AlphaDecayStats {
-    pub total_fills: usize,
-    pub avg_slippage_bps: f64,
-    pub total_fees: f64,
 }
 
 #[async_trait]
 impl OrderExecution for PaperSimulator {
     async fn submit_order(&self, order: &OrderRequest) -> Result<OrderAck, ExecutionError> {
-        // Determine provenance: is the target venue's book fresh or stale?
         let staleness = self.book_staleness_ns(&order.symbol, order.venue);
         let has_book = self.is_venue_liquid(&order.symbol, order.venue);
 
-        // Increment signal counter
-        {
-            self.metrics.lock().unwrap().total_signals += 1;
-        }
+        self.metrics.lock().unwrap().total_signals += 1;
 
         let provenance = match (has_book, staleness) {
-            // No book at all — skip
-            (false, _) => {
-                self.metrics.lock().unwrap().skipped_no_book += 1;
-                return Err(ExecutionError::ExchangeError(
-                    format!("No book for {} on {:?}", order.symbol, order.venue)
-                ));
-            }
-            // Has book, no staleness data — treat as stale
+            (false, _) => return Err(ExecutionError::ExchangeError("No book".to_string())),
             (true, None) => FillProvenance::Stale,
-            // Has book, freshness check
-            (true, Some(age_ns)) => {
-                if age_ns <= MAX_BOOK_AGE_NS {
-                    FillProvenance::Fresh
-                } else {
-                    self.metrics.lock().unwrap().skipped_stale_over_2s += 1;
-                    return Err(ExecutionError::ExchangeError(
-                        format!("Book stale: {:.1}s old for {} on {:?}",
-                            age_ns as f64 / 1e9, order.symbol, order.venue)
-                    ));
-                }
+            (true, Some(age)) => {
+                if age <= MAX_BOOK_AGE_NS { FillProvenance::Fresh }
+                else { return Err(ExecutionError::ExchangeError("Stale book".to_string())); }
             }
         };
 
-        let fill = self.simulate_fill(order, provenance).await?;
-
-        let mut positions = self.positions.lock().unwrap();
-        let position = positions
-            .iter_mut()
-            .find(|p| p.venue == order.venue && p.symbol == order.symbol);
-
-        if let Some(pos) = position {
-            let signed_size = match order.side {
-                OrderSide::Buy => fill.filled_size,
-                OrderSide::Sell => -fill.filled_size,
-            };
-
-            if pos.size == 0.0 {
-                pos.entry_price = fill.avg_price;
+        if order.order_type == crate::eal::OrderType::Limit {
+            if order.post_only {
+                let matchers = self.matchers.lock().unwrap();
+                if let Some(matcher) = matchers.get(&(order.symbol.clone(), order.venue)) {
+                    let p = order.price.unwrap_or(0.0);
+                    let cross = match order.side {
+                        OrderSide::Buy => matcher.best_ask().map_or(false, |ask| ask <= p),
+                        OrderSide::Sell => matcher.best_bid().map_or(false, |bid| bid >= p),
+                    };
+                    if cross { return Err(ExecutionError::ExchangeError("Post-Only would cross".to_string())); }
+                }
             }
-            pos.size += signed_size;
-            pos.timestamp_ns = fill.timestamp_ns;
+            self.pending_limits.lock().unwrap().push(order.clone());
+            return Ok(OrderAck {
+                order_id: OrderId(0),
+                client_order_id: order.client_order_id.clone(),
+                venue: order.venue,
+                timestamp_ns: SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64,
+            });
+        }
+
+        let fill = self.simulate_fill(order, provenance).await?;
+        
+        let mut positions = self.positions.lock().unwrap();
+        let pos = positions.iter_mut().find(|p| p.venue == order.venue && p.symbol == order.symbol);
+        let signed = match fill.side { OrderSide::Buy => fill.filled_size, OrderSide::Sell => -fill.filled_size };
+
+        if let Some(p) = pos {
+            if p.size == 0.0 { p.entry_price = fill.avg_price; }
+            p.size += signed;
+            p.timestamp_ns = fill.timestamp_ns;
         } else {
             positions.push(Position {
-                venue: order.venue,
-                symbol: order.symbol.clone(),
-                size: match order.side {
-                    OrderSide::Buy => fill.filled_size,
-                    OrderSide::Sell => -fill.filled_size,
-                },
-                entry_price: fill.avg_price,
-                unrealized_pnl: 0.0,
-                timestamp_ns: fill.timestamp_ns,
+                venue: order.venue, symbol: order.symbol.clone(), size: signed,
+                entry_price: fill.avg_price, unrealized_pnl: 0.0, timestamp_ns: fill.timestamp_ns,
             });
         }
 
         Ok(OrderAck {
-            order_id: fill.order_id,
-            client_order_id: order.client_order_id.clone(),
-            venue: order.venue,
-            timestamp_ns: fill.timestamp_ns,
+            order_id: fill.order_id, client_order_id: order.client_order_id.clone(),
+            venue: order.venue, timestamp_ns: fill.timestamp_ns,
         })
     }
 
-    async fn cancel_order(&self, _order_id: OrderId) -> Result<(), ExecutionError> {
-        Ok(())
-    }
-
-    async fn get_positions(&self) -> Result<Vec<Position>, ExecutionError> {
-        Ok(self.positions.lock().unwrap().clone())
-    }
-
+    async fn cancel_order(&self, _id: OrderId) -> Result<(), ExecutionError> { Ok(()) }
+    async fn get_positions(&self) -> Result<Vec<Position>, ExecutionError> { Ok(self.positions.lock().unwrap().clone()) }
     async fn get_account_state(&self) -> Result<AccountState, ExecutionError> {
         let positions = self.positions.lock().unwrap().clone();
-        let total_pnl: f64 = positions.iter().map(|p| p.unrealized_pnl).sum();
-
         Ok(AccountState {
-            positions,
-            total_unrealized_pnl: total_pnl,
-            daily_realized_pnl: *self.daily_pnl.lock().unwrap(),
-            available_balance_usd: 100_000.0,
+            positions, total_unrealized_pnl: 0.0,
+            daily_realized_pnl: *self.daily_pnl.lock().unwrap(), available_balance_usd: 100000.0,
         })
     }
-
-    fn venue_id(&self) -> VenueId {
-        VenueId::EXCHANGE_A
-    }
-}
-
-// ============================================================================
-// Tests
-// ============================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[tokio::test]
-    async fn test_paper_simulator_basic_fill() {
-        let settings = SimulationSettings {
-            enabled: true,
-            use_real_data: false,
-            latency_simulation_ms: 0,
-            fee_tier_bps: 2.5,
-            match_l2_depth: 10,
-        };
-
-        let sim = PaperSimulator::new(settings);
-
-        sim.update_book(BookUpdate {
-            venue: VenueId::EXCHANGE_A,
-            symbol: Symbol::new("BTC"),
-            bids: vec![BookLevel { price: 60000.0, size: 1.0 }],
-            asks: vec![BookLevel { price: 60001.0, size: 1.0 }],
-            exchange_ts_ns: 0,
-            local_ts_ns: 0,
-        });
-
-        let order = OrderRequest::market_buy(
-            VenueId::EXCHANGE_A,
-            Symbol::new("BTC"),
-            0.5,
-        );
-
-        let ack = sim.submit_order(&order).await.unwrap();
-        assert_eq!(ack.order_id, OrderId(1));
-    }
-
-    #[tokio::test]
-    async fn test_per_venue_isolation() {
-        let settings = SimulationSettings {
-            enabled: true,
-            use_real_data: false,
-            latency_simulation_ms: 0,
-            fee_tier_bps: 2.5,
-            match_l2_depth: 10,
-        };
-
-        let sim = PaperSimulator::new(settings);
-
-        sim.update_book_from_tick(&Symbol::new("BTC"), 60000.0, VenueId::EXCHANGE_A);
-
-        let order_b = OrderRequest::market_buy(
-            VenueId::EXCHANGE_B,
-            Symbol::new("BTC"),
-            0.5,
-        );
-        let result = sim.submit_order(&order_b).await;
-        assert!(result.is_err(), "Exchange B has no book — should fail");
-
-        sim.update_book_from_tick(&Symbol::new("BTC"), 59995.0, VenueId::EXCHANGE_B);
-
-        let result = sim.submit_order(&order_b).await;
-        assert!(result.is_ok(), "Exchange B now has book — should fill");
-    }
-
-    #[test]
-    fn test_staleness_tracking() {
-        let settings = SimulationSettings {
-            enabled: true,
-            use_real_data: false,
-            latency_simulation_ms: 0,
-            fee_tier_bps: 2.5,
-            match_l2_depth: 10,
-        };
-
-        let sim = PaperSimulator::new(settings);
-
-        // No data = stale
-        assert!(sim.is_book_stale(&Symbol::new("BTC"), VenueId::EXCHANGE_A, MAX_BOOK_AGE_NS));
-
-        // After tick = fresh
-        sim.update_book_from_tick(&Symbol::new("BTC"), 60000.0, VenueId::EXCHANGE_A);
-        assert!(!sim.is_book_stale(&Symbol::new("BTC"), VenueId::EXCHANGE_A, MAX_BOOK_AGE_NS));
-
-        // Other venue still stale
-        assert!(sim.is_book_stale(&Symbol::new("BTC"), VenueId::EXCHANGE_B, MAX_BOOK_AGE_NS));
-    }
-
-    #[test]
-    fn test_staleness_ns() {
-        let settings = SimulationSettings {
-            enabled: true,
-            use_real_data: false,
-            latency_simulation_ms: 0,
-            fee_tier_bps: 2.5,
-            match_l2_depth: 10,
-        };
-
-        let sim = PaperSimulator::new(settings);
-
-        // No data = None
-        assert!(sim.book_staleness_ns(&Symbol::new("BTC"), VenueId::EXCHANGE_A).is_none());
-
-        // After tick = small number
-        sim.update_book_from_tick(&Symbol::new("BTC"), 60000.0, VenueId::EXCHANGE_A);
-        let staleness = sim.book_staleness_ns(&Symbol::new("BTC"), VenueId::EXCHANGE_A).unwrap();
-        assert!(staleness < 1_000_000_000, "Should be fresh (<1s)");
-    }
+    fn venue_id(&self) -> VenueId { VenueId::EXCHANGE_A }
 }

@@ -2,6 +2,7 @@
 
 ## Objective
 Validate trade signals against risk limits, track positions, and execute orders. Implements position cap, side-aware cooldown, and conservative fill model.
+Validate trade signals against risk limits, manage a passive market-making lifecycle, and automate exits. Implements `Post-Only` entries, automated Take-Profit limit orders, and tiered symbol-specific time exits.
 
 ## Invariants
 
@@ -12,19 +13,32 @@ Validate trade signals against risk limits, track positions, and execute orders.
 5. **Error propagation**: Execution errors wrapped in `RiskError::ExecutionFailed`
 6. **Side-aware cooldown**: `(symbol, side)` key, 200ms between trades. Allows reversals.
 7. **Position cap**: $100 cumulative notional per `(venue, symbol)`. Direction-aware: can reduce but not add beyond cap.
+8. **Maker Priority**: Entries MUST be `Post-Only`. Rejects if matching engine would cross the spread.
+9. **TP Coupling**: Every entry fill MUST trigger a secondary Take-Profit limit order at +13 bps.
 
-## Order Flow (v0.1.3)
+## Order Flow (v0.2.0 — Maker Mode)
 
 ```
 TradeSignal ──▶ process_signal()
                 │
-                ├─ [1] Side-aware cooldown check (200ms per symbol+side)
-                ├─ [2] Preflight: kill switch, daily loss, signal TTL, correlation, max notional, slippage
-                ├─ [3] Self-trade prevention
-                ├─ [4] Position cap check ($100, direction-aware)
-                ├─ [5] Calculate order size (max_notional / price)
-                ├─ [6] Submit order to executor
-                └─ [7] Update cooldown + cumulative notional on success
+                ├─ [1] Side-aware cooldown check
+                ├─ [2] Preflight checks (Kill-switch, Daily Loss, TTL, Notional)
+                ├─ [3] Maker-Price Calculation (Mid-price)
+                ├─ [4] Submit Post-Only Limit Order
+                └─ [5] Add to 'pending_orders' (awaits fill_rx)
+
+fill_rx ──────▶ process_fill()
+                │
+                ├─ [1] Resolve 'pending_orders'
+                ├─ [2] Update net position & 'position_open_ts'
+                └─ [3] GENERATE AUTOMATED TP:
+                       Submit Limit Order at entry + 13.0 bps
+
+Tick/Book ────▶ check_time_exits()
+                │
+                ├─ [1] Lookup symbol_timeouts[symbol] or default
+                ├─ [2] Calculate position age (now - position_open_ts)
+                └─ [3] IF age > timeout: Submit IOC Market-Exit
 ```
 
 ## Position Cap Logic

@@ -229,9 +229,16 @@ pub struct StrategySettings {
     /// Only trade high-conviction signals
     pub high_conviction_only: bool,
 
-    /// Time-based exit timeout in ms — close positions older than this
+    /// Time-based exit timeout in ms — close positions older than this (global fallback)
     #[validate(range(min = 100, max = 60000))]
     pub exit_timeout_ms: u64,
+
+    /// Symbol-specific exit timeouts in ms (e.g., {"ADA": 1000, "TON": 2500})
+    pub symbol_timeouts: std::collections::HashMap<String, u64>,
+
+    /// Target profit in basis points for automated limit exits (e.g., 10.0 = 0.10%)
+    #[validate(range(min = 1.0, max = 100.0))]
+    pub take_profit_bps: f64,
 }
 
 // ============================================================================
@@ -244,6 +251,10 @@ pub struct RiskSettings {
     /// Maximum notional USD per single trade
     #[validate(range(min = 1.0, max = 1_000_000.0))]
     pub max_notional_usd: f64,
+
+    /// Maximum net position notional in USD per symbol
+    #[validate(range(min = 10.0, max = 10_000_000.0))]
+    pub max_position_usd: f64,
 
     /// Maximum daily drawdown in USD before circuit breaker
     #[validate(range(min = 1.0, max = 100_000.0))]
