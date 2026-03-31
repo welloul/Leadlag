@@ -282,10 +282,15 @@ impl ImpulseDetector {
                     let spread_bps = (src - tgt) / tgt * 10_000.0;
                     let direction_match = (delta_bps > 0.0) == (spread_bps > 0.0);
                     let sufficient_gap = spread_bps.abs() > self.lag_threshold_bps;
-                    // Momentum continuity: delta must still be growing (not mean-reverting)
-                    // The source tracker's last_delta should agree in direction with this delta
-                    let momentum_fresh = delta_bps.signum() == self.tracker_a.last_delta_bps.signum()
-                        || self.tracker_a.last_delta_bps == 0.0;
+                    // Momentum continuity: use the tracker for the ACTUAL source venue.
+                    // Previously this always checked tracker_a, which was wrong for
+                    // B-sourced impulses (B's momentum was never verified).
+                    let last_delta = match venue {
+                        VenueId::EXCHANGE_A => self.tracker_a.last_delta_bps,
+                        _ => self.tracker_b.last_delta_bps,
+                    };
+                    let momentum_fresh = delta_bps.signum() == last_delta.signum()
+                        || last_delta == 0.0;
                     direction_match && sufficient_gap && momentum_fresh
                 } else {
                     false

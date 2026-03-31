@@ -207,8 +207,8 @@ pub struct StrategySettings {
     pub venue_freshness_ms: u64,
 
     /// Minimum cross-venue edge in bps to enter a trade (should cover fees + slippage)
-    #[validate(range(min = 2, max = 50))]
-    pub entry_threshold_bps: u64,
+    #[validate(range(min = 0.5, max = 50.0))]
+    pub entry_threshold_bps: f64,
 
     /// Cooldown in ms between trades for same (symbol, side) pair
     #[validate(range(min = 5, max = 5000))]

@@ -46,8 +46,10 @@ pub struct SignalPipeline<const N: usize> {
     correlators: std::collections::HashMap<Symbol, CrossCorrelator<N>>,
     /// Hysteresis state machine for each symbol (for correlation-hysteresis).
     hysteresis: std::collections::HashMap<Symbol, Hysteresis>,
-    /// Impulse-OBI engine (for impulse-obi strategy).
-    impulse_obi_engine: Option<ImpulseObiEngine>,
+    /// Per-symbol Impulse-OBI engines.
+    /// IMPORTANT: Each symbol gets its own isolated engine so that
+    /// DOGE's pending impulse never combines with SUI's OBI.
+    impulse_obi_engines: std::collections::HashMap<Symbol, ImpulseObiEngine>,
     /// Strategy settings.
     settings: StrategySettings,
     /// Minimum correlation to generate a signal.
@@ -77,42 +79,47 @@ impl<const N: usize> SignalPipeline<N> {
             _ => ActiveStrategy::CorrelationHysteresis,
         };
 
-        // Initialize impulse-obi engine if needed
-        let impulse_obi_engine = if active_strategy == ActiveStrategy::ImpulseObi {
+        // Initialize one ImpulseObiEngine per symbol when using impulse-obi strategy.
+        // Each engine has its own MidpriceTrackers and OBI state — completely isolated.
+        let mut impulse_obi_engines = std::collections::HashMap::new();
+        if active_strategy == ActiveStrategy::ImpulseObi {
             let window_ns = settings.impulse_window_ms * 1_000_000;
             let signal_timeout_ns = settings.signal_timeout_ms * 1_000_000;
             let venue_freshness_ns = settings.venue_freshness_ms * 1_000_000;
-            let impulse_detector = ImpulseDetector::new(
-                window_ns,
-                settings.impulse_threshold_bps as f64,
-                settings.lag_threshold_bps,
-                settings.min_trade_size_filter,
-                signal_timeout_ns,
-                venue_freshness_ns,
-            );
-            let obi_detector = ObiDivergenceDetector::new(
-                settings.obi_strong_threshold,
-                settings.obi_neutral_threshold,
-                settings.obi_depth,
-                settings.obi_spike_threshold,
-                settings.obi_persist_ms * 1_000_000,
-            );
-            Some(ImpulseObiEngine::new(
-                impulse_detector,
-                obi_detector,
-                settings.entry_threshold_bps as f64,
-                signal_timeout_ns,
-                settings.high_conviction_only,
-            ))
-        } else {
-            None
-        };
+
+            for symbol_str in &settings.symbols {
+                let symbol = Symbol::new(symbol_str);
+                let impulse_detector = ImpulseDetector::new(
+                    window_ns,
+                    settings.impulse_threshold_bps as f64,
+                    settings.lag_threshold_bps,
+                    settings.min_trade_size_filter,
+                    signal_timeout_ns,
+                    venue_freshness_ns,
+                );
+                let obi_detector = ObiDivergenceDetector::new(
+                    settings.obi_strong_threshold,
+                    settings.obi_neutral_threshold,
+                    settings.obi_depth,
+                    settings.obi_spike_threshold,
+                    settings.obi_persist_ms * 1_000_000,
+                );
+                let engine = ImpulseObiEngine::new(
+                    impulse_detector,
+                    obi_detector,
+                    settings.entry_threshold_bps,
+                    signal_timeout_ns,
+                    settings.high_conviction_only,
+                );
+                impulse_obi_engines.insert(symbol, engine);
+            }
+        }
 
         Self {
             active_strategy,
             correlators,
             hysteresis: hysteresis_map,
-            impulse_obi_engine,
+            impulse_obi_engines,
             settings,
             min_r,
             timegrid_precision_ns: 5_000_000, // Default 5ms, overridden by set_precision()
@@ -138,15 +145,22 @@ impl<const N: usize> SignalPipeline<N> {
         }
     }
 
-    /// Process tick for impulse-obi strategy
+    /// Process tick for impulse-obi strategy.
+    /// Routes to the engine for the tick's symbol — fully isolated per symbol.
     pub fn process_tick(&mut self, tick: &Tick) -> Option<TradeSignal> {
-        if let Some(engine) = &mut self.impulse_obi_engine {
+        if let Some(engine) = self.impulse_obi_engines.get_mut(&tick.symbol) {
             if let Some(signal) = engine.process_tick(tick) {
+                // Encode impulse magnitude as a normalised strength factor in correlation_r.
+                // The OMS uses this to scale position size (0.5–2.0× base).
+                // factor = impulse_bps / threshold_bps, clamped to [0.5, 2.0]
+                let strength = (signal.impulse_magnitude_bps.abs()
+                    / self.settings.impulse_threshold_bps as f64)
+                    .clamp(0.5, 2.0);
                 return Some(TradeSignal {
                     side: signal.side,
                     target_venue: signal.target_venue,
                     symbol: signal.symbol,
-                    correlation_r: 0.0, // Not applicable for impulse-obi
+                    correlation_r: strength,
                     lag_offset_ns: 0,
                     timestamp_ns: signal.timestamp_ns,
                 });
@@ -155,9 +169,10 @@ impl<const N: usize> SignalPipeline<N> {
         None
     }
 
-    /// Process book update for impulse-obi strategy (OBI path)
+    /// Process book update for impulse-obi strategy (OBI path).
+    /// Routes to the engine for the book's symbol — fully isolated per symbol.
     pub fn process_book(&mut self, book: &BookUpdate) -> Option<TradeSignal> {
-        if let Some(engine) = &mut self.impulse_obi_engine {
+        if let Some(engine) = self.impulse_obi_engines.get_mut(&book.symbol) {
             if let Some(signal) = engine.process_book(book) {
                 return Some(TradeSignal {
                     side: signal.side,
@@ -174,14 +189,18 @@ impl<const N: usize> SignalPipeline<N> {
 
     /// Process book update for impulse detection (book-mid path).
     /// Feed book midprice into ImpulseDetector — more reliable than trade price.
+    /// Routes to the engine for the book's symbol — fully isolated per symbol.
     pub fn process_book_for_impulse(&mut self, book: &BookUpdate) -> Option<TradeSignal> {
-        if let Some(engine) = &mut self.impulse_obi_engine {
+        if let Some(engine) = self.impulse_obi_engines.get_mut(&book.symbol) {
             if let Some(signal) = engine.impulse_detector.process_book(book) {
+                let strength = (signal.impulse_magnitude_bps.abs()
+                    / self.settings.impulse_threshold_bps as f64)
+                    .clamp(0.5, 2.0);
                 return Some(TradeSignal {
                     side: signal.side,
                     target_venue: signal.target_venue,
                     symbol: signal.symbol,
-                    correlation_r: 0.0,
+                    correlation_r: strength,
                     lag_offset_ns: 0,
                     timestamp_ns: signal.timestamp_ns,
                 });
@@ -327,7 +346,7 @@ mod tests {
             obi_depth: 5,
             obi_spike_threshold: 0.3,
             venue_freshness_ms: 400,
-            entry_threshold_bps: 8,
+            entry_threshold_bps: 8.0,
             cooldown_ms: 200,
             max_levels_consumed: 3,
             obi_persist_ms: 200,
@@ -339,5 +358,45 @@ mod tests {
         let pipeline = SignalPipeline::<256>::new(settings);
         assert_eq!(pipeline.correlators.len(), 2);
         assert_eq!(pipeline.hysteresis.len(), 2);
+        assert_eq!(pipeline.impulse_obi_engines.len(), 0); // correlation mode, no impulse engines
+    }
+
+    #[test]
+    fn test_per_symbol_engine_isolation() {
+        let settings = StrategySettings {
+            active_strategy: "impulse_obi".to_string(),
+            symbols: vec!["BTC".to_string(), "ETH".to_string(), "SOL".to_string()],
+            window_size_ticks: 256,
+            min_correlation_r: 0.85,
+            hysteresis_buffer: 0.10,
+            enable_obi: false,
+            obi_weight: 0.0,
+            impulse_threshold_bps: 7,
+            lag_threshold_bps: 1.0,
+            impulse_window_ms: 5,
+            signal_timeout_ms: 250,
+            min_trade_size_filter: 0.001,
+            spread_filter_bps: 10,
+            obi_strong_threshold: 0.65,
+            obi_neutral_threshold: 0.15,
+            obi_depth: 5,
+            obi_spike_threshold: 0.25,
+            venue_freshness_ms: 400,
+            entry_threshold_bps: 4.0,
+            cooldown_ms: 20,
+            max_levels_consumed: 3,
+            obi_persist_ms: 30,
+            fill_conservatism: 0.5,
+            high_conviction_only: true,
+            exit_timeout_ms: 5000,
+        };
+
+        let pipeline = SignalPipeline::<256>::new(settings);
+        // Each of the 3 symbols should have its own isolated engine
+        assert_eq!(
+            pipeline.impulse_obi_engines.len(),
+            3,
+            "One engine per symbol for impulse_obi strategy"
+        );
     }
 }

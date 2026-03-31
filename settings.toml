@@ -60,13 +60,13 @@ obi_spike_threshold = 0.25       # More sensitive shift detector
 
 # Entry logic
 venue_freshness_ms = 400         # Both venues must have ticked within 400ms
-entry_threshold_bps = 4          # Lowered from 8: fixed edge formula means 4 bps is real edge
+entry_threshold_bps = 5.5          # Raised: 5 bps fees + 0.5 bps slippage buffer
 cooldown_ms = 20                 # Side-aware cooldown between trades
 max_levels_consumed = 3          # Max price levels to sweep
 obi_persist_ms = 30              # CRITICAL: was 200ms — book pressure in crypto evaporates in 10-50ms
 fill_conservatism = 0.5          # Only fill 50% of best level size
 high_conviction_only = true
-exit_timeout_ms = 30000          # Close positions older than 30 seconds
+exit_timeout_ms = 5000           # Close positions older than 5s (lead-lag edge evaporates in <2s)
 
 # --- Risk Management ---
 

@@ -307,8 +307,23 @@ impl OrderManagementSystem {
             self.check_self_trade(signal)?;
         }
 
-        // Calculate order size based on max notional
-        let size = self.risk_settings.max_notional_usd / current_price;
+        // Calculate order size based on max notional.
+        // For impulse-obi strategy, correlation_r carries the signal strength factor
+        // (set by the signal pipeline as impulse_bps / impulse_threshold_bps, clamped 0.5-2.0).
+        // Larger impulse magnitude → proportionally larger position, up to 2x base.
+        let base_size = self.risk_settings.max_notional_usd / current_price;
+        let strength_factor = if self.strategy_settings.active_strategy == "impulse_obi"
+            && signal.correlation_r > 0.0
+        {
+            signal.correlation_r.clamp(0.5, 2.0)
+        } else {
+            1.0
+        };
+        let size = base_size * strength_factor;
+        tracing::debug!(
+            "Order size: base={:.6} × strength={:.2} = {:.6} (price={:.4})",
+            base_size, strength_factor, size, current_price
+        );
 
         // Create order request
         let order = OrderRequest {

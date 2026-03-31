@@ -4,7 +4,7 @@
 
 | Aspect | Status |
 |--------|--------|
-| **Phase** | Paper Trading (v0.1.4) |
+| **Phase** | Paper Trading (v0.1.5) |
 | **Stability** | All 69 tests passing |
 | **Live Trading** | Disabled (simulation only) |
 | **API Keys** | Not required (market data is public) |
@@ -55,6 +55,14 @@
 6. **Schema precision** — `lag_threshold_bps` changed to `f64` for fractional bps thresholds.
 7. **Per-symbol state isolation** — ImpulseObiEngine instances now properly isolated per symbol (handled in routing), preventing cross-symbol pollution.
 
+### RECENT FIXES (v0.1.5 — Signal Quality and Position Management Enhancements)
+1. **OBI wall-clock persistence** — Persistence timer uses `now_ns()` instead of exchange timestamps, immune to clock drift and stale simulation data.
+2. **Venue-specific momentum filter** — B-sourced impulses check `tracker_b.last_delta_bps` (was incorrectly checking tracker_a), ensuring correct directional agreement.
+3. **Per-symbol engine isolation** — 8 independent ImpulseObiEngine instances per symbol, eliminating cross-symbol signal pollution.
+4. **Trending OBI condition** — Fires when both venues show positive imbalance but one is stronger (divergence in trending markets), expanding signal coverage beyond neutral-threshold logic.
+5. **Impulse magnitude position sizing** — Position size scales with impulse strength (0.5–2× base), capped at 2× max_notional, for proportional risk-reward.
+6. **Tighter exit and entry thresholds** — `exit_timeout_ms` reduced from 30s to 5s, `entry_threshold_bps` increased to 5.5 to ensure net-positive after fees and reduce dead position holding.
+
 ### RECENT FIXES (v0.1.2 — AWS Deployment & Real L2 Books)
 1. Real L2 order book subscriptions (Binance `@depth@100ms`, Hyperliquid `l2Book`)
 2. Local order book state with BTreeMap (Binance diff stream)
@@ -102,9 +110,9 @@ signal_timeout_ms = 250         # Combo window
 min_trade_size_filter = 0.001
 spread_filter_bps = 10
 
-# Entry logic tightening (v0.1.4)
+# Entry logic tightening (v0.1.5)
 venue_freshness_ms = 400
-entry_threshold_bps = 5         # Fees-aware minimum edge
+entry_threshold_bps = 5.5       # Fees-aware minimum edge
 cooldown_ms = 200               # Side-aware
 max_levels_consumed = 3
 obi_persist_ms = 30
@@ -115,6 +123,7 @@ max_notional_usd = 10.0         # Per-trade cap
 max_drawdown_daily = 200.0
 max_slippage_bps = 8
 signal_ttl_ms = 500
+exit_timeout_ms = 5000          # Exit dead positions after 5s
 self_trade_prevention = true
 
 # Position cap: $100 per (venue, symbol), direction-aware

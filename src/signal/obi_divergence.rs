@@ -1,14 +1,19 @@
 //! OBI divergence detector for order book alpha.
 //!
 //! Detects when one exchange shows strong bid/ask pressure
-//! while the other remains neutral.
+//! while the other remains significantly weaker.
 //!
 //! # Algorithm
 //! 1. Calculate depth-weighted OBI for both exchanges
-//! 2. Track persistence (OBI must stay strong for N ms)
-//! 3. Detect when one exchange has strong imbalance (> threshold)
-//! 4. Check if other exchange is neutral (< neutral_threshold)
-//! 5. Generate signal to trade the neutral exchange
+//! 2. Track persistence using WALL-CLOCK time (immune to exchange clock drift)
+//! 3. Detect when one exchange has strong imbalance (> strong_threshold)
+//! 4. Check if the imbalance DIVERGES from the other exchange by at least min_divergence
+//! 5. Generate signal to trade the weaker exchange
+//!
+//! # Why divergence instead of neutral-threshold?
+//! Old logic: obi_b.abs() < 0.15 — fails in trending markets where BOTH venues
+//! show positive OBI (e.g. A=0.70, B=0.45). The divergence check (A - B > 0.35)
+//! correctly identifies that A has meaningfully more pressure than B.
 
 use crate::eal::{BookUpdate, OrderSide, Symbol, VenueId};
 
@@ -33,17 +38,23 @@ pub struct ObiSignal {
 /// OBI divergence detector
 pub struct ObiDivergenceDetector {
     strong_threshold: f64,
-    neutral_threshold: f64,
+    /// Minimum OBI spread between venues: (strong_obi - weak_obi) > min_divergence
+    /// Replaces the old neutral_threshold. Handles trending markets correctly.
+    min_divergence: f64,
     depth: usize,
     current_obi_a: Option<f64>,
     current_obi_b: Option<f64>,
     prev_obi_a: Option<f64>,
     spike_threshold: f64,
-    /// Time-based persistence: timestamp when OBI first went strong (per venue)
+    /// Wall-clock time when OBI for venue A first went strong (None if not strong)
     persist_start_a: Option<u64>,
+    /// Wall-clock time when OBI for venue B first went strong (None if not strong)
     persist_start_b: Option<u64>,
-    /// OBI must stay strong for this long (nanoseconds)
+    /// OBI must stay strong for this long (nanoseconds, wall-clock based)
     obi_persist_ns: u64,
+    // Keep neutral_threshold for backward compat in struct, but not used in signal logic
+    #[allow(dead_code)]
+    neutral_threshold: f64,
 }
 
 impl ObiDivergenceDetector {
@@ -54,9 +65,14 @@ impl ObiDivergenceDetector {
         spike_threshold: f64,
         obi_persist_ns: u64,
     ) -> Self {
+        // min_divergence: the minimum difference between strong and weak side OBI.
+        // Default = strong_threshold * 0.6 (e.g., threshold=0.65 → divergence=0.39).
+        // This means: even if both sides show some bid pressure, one must be
+        // significantly more bid-heavy than the other to qualify.
+        let min_divergence = strong_threshold * 0.55;
         Self {
             strong_threshold,
-            neutral_threshold,
+            min_divergence,
             depth,
             current_obi_a: None,
             current_obi_b: None,
@@ -65,6 +81,7 @@ impl ObiDivergenceDetector {
             persist_start_a: None,
             persist_start_b: None,
             obi_persist_ns,
+            neutral_threshold,
         }
     }
 
@@ -89,7 +106,10 @@ impl ObiDivergenceDetector {
         }
     }
 
-    /// Process book update and detect divergence
+    /// Process book update and detect divergence.
+    ///
+    /// Persistence uses wall-clock `now_ns()` — completely immune to exchange
+    /// clock drift or stale timestamps from Hyperliquid / Binance.
     pub fn process_book(&mut self, book: &BookUpdate) -> Option<ObiSignal> {
         let venue = book.venue;
         let symbol = book.symbol.clone();
@@ -104,17 +124,22 @@ impl ObiDivergenceDetector {
             obi
         );
 
-        // Update current OBI and persistence tracking
+        // Use wall-clock for ALL persistence tracking.
+        // This prevents exchange clock jumps from breaking the persist timer.
+        let now = now_ns();
+
+        // Update current OBI and wall-clock persistence tracking
         match venue {
             VenueId::EXCHANGE_A => {
                 self.prev_obi_a = self.current_obi_a;
                 self.current_obi_a = Some(obi);
-                // Time-based persistence
                 if obi.abs() > self.strong_threshold {
+                    // Start timer only on first entry into strong zone
                     if self.persist_start_a.is_none() {
-                        self.persist_start_a = Some(timestamp_ns);
+                        self.persist_start_a = Some(now);
                     }
                 } else {
+                    // Dropped below threshold — reset timer
                     self.persist_start_a = None;
                 }
             }
@@ -122,7 +147,7 @@ impl ObiDivergenceDetector {
                 self.current_obi_b = Some(obi);
                 if obi.abs() > self.strong_threshold {
                     if self.persist_start_b.is_none() {
-                        self.persist_start_b = Some(timestamp_ns);
+                        self.persist_start_b = Some(now);
                     }
                 } else {
                     self.persist_start_b = None;
@@ -131,7 +156,7 @@ impl ObiDivergenceDetector {
             _ => return None,
         }
 
-        // OBI delta for liquidity shift detection
+        // OBI delta for liquidity shift detection (Exchange A only for now)
         let obi_delta = if venue == VenueId::EXCHANGE_A {
             if let (Some(prev), Some(current)) = (self.prev_obi_a, self.current_obi_a) {
                 let delta = current - prev;
@@ -146,22 +171,27 @@ impl ObiDivergenceDetector {
             None
         };
 
-        // Check for divergence (both venues must have OBI)
+        // Check divergence (both venues must have OBI values)
         if let (Some(obi_a), Some(obi_b)) = (self.current_obi_a, self.current_obi_b) {
-            // Check persistence for venue A
+            // Wall-clock persistence check for each venue
             let a_persisted = match self.persist_start_a {
-                Some(start) => timestamp_ns - start >= self.obi_persist_ns,
+                Some(start) => now.saturating_sub(start) >= self.obi_persist_ns,
                 None => false,
             };
-            // Check persistence for venue B
             let b_persisted = match self.persist_start_b {
-                Some(start) => timestamp_ns - start >= self.obi_persist_ns,
+                Some(start) => now.saturating_sub(start) >= self.obi_persist_ns,
                 None => false,
             };
 
-            // A strong + persisted, B neutral → BUY on B
-            if a_persisted && obi_a > self.strong_threshold && obi_b.abs() < self.neutral_threshold
+            // A shows bid pressure, and A is meaningfully more bid-heavy than B → BUY on B
+            // Condition: obi_a > strong_threshold AND (obi_a - obi_b) > min_divergence
+            // This correctly fires in trending markets (both positive, but A much more so).
+            if a_persisted && obi_a > self.strong_threshold && (obi_a - obi_b) > self.min_divergence
             {
+                tracing::info!(
+                    "OBI signal BUY on B: {} | obi_a={:.3} obi_b={:.3} div={:.3} (need {:.3})",
+                    symbol, obi_a, obi_b, obi_a - obi_b, self.min_divergence
+                );
                 return Some(ObiSignal {
                     side: OrderSide::Buy,
                     target_venue: VenueId::EXCHANGE_B,
@@ -172,9 +202,13 @@ impl ObiDivergenceDetector {
                 });
             }
 
-            // A negative strong + persisted, B neutral → SELL on B
-            if a_persisted && obi_a < -self.strong_threshold && obi_b.abs() < self.neutral_threshold
+            // A shows ask pressure, and A is meaningfully more ask-heavy than B → SELL on B
+            if a_persisted && obi_a < -self.strong_threshold && (obi_b - obi_a) > self.min_divergence
             {
+                tracing::info!(
+                    "OBI signal SELL on B: {} | obi_a={:.3} obi_b={:.3} div={:.3} (need {:.3})",
+                    symbol, obi_a, obi_b, obi_b - obi_a, self.min_divergence
+                );
                 return Some(ObiSignal {
                     side: OrderSide::Sell,
                     target_venue: VenueId::EXCHANGE_B,
@@ -185,9 +219,13 @@ impl ObiDivergenceDetector {
                 });
             }
 
-            // B strong + persisted, A neutral → BUY on A
-            if b_persisted && obi_b > self.strong_threshold && obi_a.abs() < self.neutral_threshold
+            // B shows bid pressure, more bid-heavy than A → BUY on A
+            if b_persisted && obi_b > self.strong_threshold && (obi_b - obi_a) > self.min_divergence
             {
+                tracing::info!(
+                    "OBI signal BUY on A: {} | obi_b={:.3} obi_a={:.3} div={:.3} (need {:.3})",
+                    symbol, obi_b, obi_a, obi_b - obi_a, self.min_divergence
+                );
                 return Some(ObiSignal {
                     side: OrderSide::Buy,
                     target_venue: VenueId::EXCHANGE_A,
@@ -198,9 +236,13 @@ impl ObiDivergenceDetector {
                 });
             }
 
-            // B negative strong + persisted, A neutral → SELL on A
-            if b_persisted && obi_b < -self.strong_threshold && obi_a.abs() < self.neutral_threshold
+            // B shows ask pressure, more ask-heavy than A → SELL on A
+            if b_persisted && obi_b < -self.strong_threshold && (obi_a - obi_b) > self.min_divergence
             {
+                tracing::info!(
+                    "OBI signal SELL on A: {} | obi_b={:.3} obi_a={:.3} div={:.3} (need {:.3})",
+                    symbol, obi_b, obi_a, obi_a - obi_b, self.min_divergence
+                );
                 return Some(ObiSignal {
                     side: OrderSide::Sell,
                     target_venue: VenueId::EXCHANGE_A,
@@ -258,11 +300,10 @@ mod tests {
             vec![(101.0, 2.0), (102.0, 3.0)],  // weighted: 2*1 + 3*0.5 = 3.5
         );
         // OBI = (25 - 3.5) / (25 + 3.5) = 21.5 / 28.5 ≈ 0.754
-        let obi = book.obi(2); // Simple OBI for comparison
+        let obi = book.obi(2);
         assert!(obi > 0.0);
 
-        // Weighted should be more extreme (top levels dominate)
-        let detector = ObiDivergenceDetector::new(0.7, 0.2, 2, 0.3, 200_000_000);
+        let detector = ObiDivergenceDetector::new(0.65, 0.15, 2, 0.25, 0);
         let weighted = detector.weighted_obi(&book);
         assert!(
             weighted > obi,
@@ -272,10 +313,10 @@ mod tests {
 
     #[test]
     fn test_obi_divergence_with_persistence() {
-        // persist_ns = 0 means instant persistence (for testing)
-        let mut detector = ObiDivergenceDetector::new(0.7, 0.2, 5, 0.3, 0);
+        // persist_ns = 0 → instant persistence (for testing)
+        let mut detector = ObiDivergenceDetector::new(0.65, 0.15, 5, 0.25, 0);
 
-        // A has strong bid imbalance
+        // A has strong bid imbalance (~0.754)
         let book_a = make_book(
             VenueId::EXCHANGE_A,
             vec![(100.0, 20.0), (99.0, 10.0)],
@@ -283,7 +324,7 @@ mod tests {
         );
         detector.process_book(&book_a);
 
-        // B is neutral
+        // B is neutral / slight bid (~0.176)
         let book_b = make_book(
             VenueId::EXCHANGE_B,
             vec![(100.0, 5.0), (99.0, 5.0)],
@@ -291,37 +332,70 @@ mod tests {
         );
         let signal = detector.process_book(&book_b);
 
-        assert!(signal.is_some());
+        assert!(signal.is_some(), "Should fire: A bid-heavy, B neutral");
         let signal = signal.unwrap();
         assert_eq!(signal.side, OrderSide::Buy);
         assert_eq!(signal.target_venue, VenueId::EXCHANGE_B);
     }
 
     #[test]
-    fn test_obi_no_divergence() {
-        let mut detector = ObiDivergenceDetector::new(0.7, 0.2, 5, 0.3, 0);
+    fn test_obi_fires_in_trending_market() {
+        // Both venues positive OBI, but A significantly stronger
+        // Old neutral-threshold logic would fail this. Divergence logic should pass.
+        let mut detector = ObiDivergenceDetector::new(0.65, 0.15, 5, 0.25, 0);
 
-        // Both moderate
+        // A: strong bid pressure (OBI ≈ 0.75)
         let book_a = make_book(
             VenueId::EXCHANGE_A,
-            vec![(100.0, 10.0), (99.0, 5.0)],
-            vec![(101.0, 5.0), (102.0, 5.0)],
+            vec![(100.0, 20.0), (99.0, 10.0)],
+            vec![(101.0, 2.0), (102.0, 3.0)],
         );
         detector.process_book(&book_a);
 
+        // B: moderate bid pressure (OBI ≈ 0.33) — NOT neutral, but much weaker than A
+        // Old check: obi_b.abs() < 0.15 → FAIL (0.33 > 0.15, no signal)
+        // New check: obi_a - obi_b > min_divergence → 0.75-0.33=0.42 > 0.36 → PASS
         let book_b = make_book(
             VenueId::EXCHANGE_B,
             vec![(100.0, 8.0), (99.0, 5.0)],
-            vec![(101.0, 7.0), (102.0, 5.0)],
+            vec![(101.0, 5.0), (102.0, 5.0)],
         );
         let signal = detector.process_book(&book_b);
-        assert!(signal.is_none());
+
+        assert!(
+            signal.is_some(),
+            "Divergence check should fire even when B has moderate OBI"
+        );
+        let signal = signal.unwrap();
+        assert_eq!(signal.side, OrderSide::Buy);
+    }
+
+    #[test]
+    fn test_obi_no_divergence_when_both_strong() {
+        // Both venues equally bid-heavy — no signal
+        let mut detector = ObiDivergenceDetector::new(0.65, 0.15, 5, 0.25, 0);
+
+        let book_a = make_book(
+            VenueId::EXCHANGE_A,
+            vec![(100.0, 20.0), (99.0, 10.0)],
+            vec![(101.0, 2.0), (102.0, 3.0)],
+        );
+        detector.process_book(&book_a);
+
+        // B equally bid-heavy as A
+        let book_b = make_book(
+            VenueId::EXCHANGE_B,
+            vec![(100.0, 20.0), (99.0, 10.0)],
+            vec![(101.0, 2.0), (102.0, 3.0)],
+        );
+        let signal = detector.process_book(&book_b);
+        assert!(signal.is_none(), "No divergence → no signal");
     }
 
     #[test]
     fn test_persistence_blocks_instant_signals() {
-        // persist_ns = 1 second — signal should NOT fire immediately
-        let mut detector = ObiDivergenceDetector::new(0.7, 0.2, 5, 0.3, 1_000_000_000);
+        // persist_ns = 100ms — signal should NOT fire immediately
+        let mut detector = ObiDivergenceDetector::new(0.65, 0.15, 5, 0.25, 100_000_000);
 
         let book_a = make_book(
             VenueId::EXCHANGE_A,
@@ -339,6 +413,34 @@ mod tests {
         assert!(
             signal.is_none(),
             "Persistence filter should block instant signals"
+        );
+    }
+
+    #[test]
+    fn test_persistence_uses_wall_clock() {
+        // Verify that exchange_ts_ns = 0 (stale/simulation) does NOT break persistence.
+        // Old code: `timestamp_ns - start >= obi_persist_ns` where both were exchange ts.
+        // If exchange_ts_ns is always 0, then `0 - 0 = 0 >= 0` → always persisted (wrong!).
+        // New code: uses now_ns() so persistence is always real elapsed wall time.
+        let mut detector = ObiDivergenceDetector::new(0.65, 0.15, 5, 0.25, 50_000_000_000); // 50s
+
+        let book_a = make_book(
+            VenueId::EXCHANGE_A,
+            vec![(100.0, 20.0), (99.0, 10.0)],
+            vec![(101.0, 2.0), (102.0, 3.0)],
+        );
+        // exchange_ts_ns = 0 on both
+        detector.process_book(&book_a);
+
+        let book_b = make_book(
+            VenueId::EXCHANGE_B,
+            vec![(100.0, 5.0)],
+            vec![(101.0, 5.0)],
+        );
+        let signal = detector.process_book(&book_b);
+        assert!(
+            signal.is_none(),
+            "50s wall-clock persist should not be satisfied immediately"
         );
     }
 }

@@ -1,5 +1,5 @@
 
-## System Overview (v0.1.4)
+## System Overview (v0.1.5)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
@@ -22,20 +22,20 @@
 │  ┌─────────────────────────────────────────────────────────────────────────┐   │
 │  │                      MAIN LOOP (Async Tokio Task)                        │   │
 │  │                                                                          │   │
-│  │  ┌───────────────── ENTRY LOGIC (v0.1.4) ─────────────────────────────┐  │   │
+│  │  ┌───────────────── ENTRY LOGIC (v0.1.5) ─────────────────────────────┐  │   │
 │  │  │                                                                    │  │   │
 │  │  │  Impulse path:                                                     │  │   │
 │  │  │  ├─ Freshness gate (400ms local)                                   │  │   │
 │  │  │  ├─ Warmup gate (both trackers init + warmed)                      │  │   │
 │  │  │  ├─ Sanity check (delta < 500 bps)                                 │  │   │
 │  │  │  ├─ Lag check (other delta < 1.0 bps)                              │  │   │
-│  │  │  ├─ Momentum filter (current delta agrees with previous sign)     │  │   │
+│  │  │  ├─ Momentum filter (current delta agrees with venue-specific previous)│  │   │
   │  │  ├─ Edge check (5 bps fees-aware, direction-normalized)            │  │   │
 │  │  │  └─ Cooldown (200ms per symbol+side)                               │  │   │
 │  │  │                                                                    │  │   │
 │  │  │  OBI path:                                                         │  │   │
 │  │  │  ├─ Weighted OBI (depth-weighted, top levels dominate)             │  │   │
-│  │  │  ├─ Time-based persistence (30ms, not count-based)                 │  │   │
+│  │  │  ├─ Time-based persistence (30ms wall-clock, not count-based)       │  │   │
 │  │  │  └─ Edge check (same fees-aware threshold)                         │  │   │
 │  │  │                                                                    │  │   │
 │  │  │  Position cap: $100 per (venue, symbol), direction-aware           │  │   │
@@ -89,7 +89,7 @@
 │                                                              ▼                  │
 │                                                        TradeSignal              │
 │                                                                                 │
-│  IMPULSE-OBI PATH (v0.1.4):                                                    │
+│  IMPULSE-OBI PATH (v0.1.5):                                                    │
 │  ──────────────────────────                                                     │
 │  Tick A ──▶ process_tick() ──▶ ImpulseDetector.process_tick()                   │
 │                                    │                                            │
@@ -104,8 +104,8 @@
 │  Book A ──▶ process_book() ──▶ ObiDivergenceDetector.process_book()             │
 │                                    │                                            │
 │                                    ├─ Depth-weighted OBI (1/(i+1) weights)      │
-│                                    ├─ Time-based persistence (30ms)            │
-│                                    ├─ Divergence: one strong, other neutral?    │
+│                                    ├─ Time-based persistence (30ms wall-clock)  │
+│                                    ├─ Divergence: both positive, one stronger?  │
 │                                    └─ If yes → ObiSignal                        │
 │                                                                                 │
 │  ImpulseObiEngine combines:                                                     │
@@ -119,8 +119,10 @@
 │  OMS gates:                                                                    │
 │  ├─ Cooldown: 200ms per (symbol, side)                                         │
 │  ├─ Position cap: $100 per (venue, symbol), direction-aware                    │
+│  ├─ Impulse-based sizing: 0.5–2× base size proportional to impulse magnitude  │
 │  ├─ Book age gate: 400ms hard reject                                           │
 │  ├─ Conservative fill: 50% of best level                                       │
+│  ├─ Exit timeout: 5s for dead positions                                        │
 │  └─ TTL: 500ms signal expiry                                                   │
 │                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘
