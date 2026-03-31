@@ -165,9 +165,9 @@ pub struct StrategySettings {
     #[validate(range(min = 1, max = 100))]
     pub impulse_threshold_bps: u64,
 
-    /// Max move on other exchange to consider it "lagging" (1-2 bps)
-    #[validate(range(min = 1, max = 50))]
-    pub lag_threshold_bps: u64,
+    /// Max move on other exchange to consider it "lagging" (0.5-5 bps can be fractional)
+    #[validate(range(min = 0.1, max = 50.0))]
+    pub lag_threshold_bps: f64,
 
     /// Lookback window in ms for price change detection
     #[validate(range(min = 1, max = 100))]

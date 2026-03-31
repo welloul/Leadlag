@@ -38,6 +38,8 @@ struct MidpriceTracker {
     warmed_up: bool,
     /// LOCAL receive timestamp of last tick (for freshness gating)
     last_local_update_ns: u64,
+    /// Last computed delta (for velocity check)
+    last_delta_bps: f64,
 }
 
 impl MidpriceTracker {
@@ -51,6 +53,7 @@ impl MidpriceTracker {
             initialized: false,
             warmed_up: false,
             last_local_update_ns: 0,
+            last_delta_bps: 0.0,
         }
     }
 
@@ -82,10 +85,14 @@ impl MidpriceTracker {
 
                 if !self.warmed_up {
                     self.warmed_up = true;
+                    self.last_delta_bps = 0.0;
                     return None;
                 }
 
-                return if delta.is_finite() { Some(delta) } else { None };
+                if delta.is_finite() {
+                    self.last_delta_bps = delta;
+                    return Some(delta);
+                }
             }
         } else {
             self.prev_mid = Some(price);
@@ -119,10 +126,14 @@ impl MidpriceTracker {
 
                 if !self.warmed_up {
                     self.warmed_up = true;
+                    self.last_delta_bps = 0.0;
                     return None;
                 }
 
-                return if delta.is_finite() { Some(delta) } else { None };
+                if delta.is_finite() {
+                    self.last_delta_bps = delta;
+                    return Some(delta);
+                }
             }
         } else {
             self.prev_mid = Some(mid);
@@ -226,10 +237,14 @@ impl ImpulseDetector {
             return None;
         }
 
-        // Freshness gate: both venues must have ticked recently (LOCAL timestamps)
-        let a_stale = timestamp_ns.saturating_sub(self.tracker_a.last_local_update_ns)
+        // Freshness gate: both venues must have ticked recently.
+        // IMPORTANT: Compare LOCAL wall-clock timestamps against each other.
+        // Do NOT compare exchange_ts_ns against last_local_update_ns — those are
+        // different clocks and the subtraction produces garbage (u64 wraparound).
+        let now = now_ns();
+        let a_stale = now.saturating_sub(self.tracker_a.last_local_update_ns)
             > self.venue_freshness_ns;
-        let b_stale = timestamp_ns.saturating_sub(self.tracker_b.last_local_update_ns)
+        let b_stale = now.saturating_sub(self.tracker_b.last_local_update_ns)
             > self.venue_freshness_ns;
         if a_stale || b_stale {
             return None;
@@ -262,11 +277,16 @@ impl ImpulseDetector {
                 };
 
                 let other_is_lagging = if let (Some(src), Some(tgt)) = (source_mid, target_mid) {
+                    // Direct midprice comparison: how far has target fallen behind source?
+                    // Positive spread_bps = source is HIGHER than target.
                     let spread_bps = (src - tgt) / tgt * 10_000.0;
-                    // If source moved up (positive delta), it should be ahead of target
-                    // Positive spread = source is higher = target is lagging
-                    spread_bps.abs() > self.lag_threshold_bps
-                        && (delta_bps > 0.0) == (spread_bps > 0.0)
+                    let direction_match = (delta_bps > 0.0) == (spread_bps > 0.0);
+                    let sufficient_gap = spread_bps.abs() > self.lag_threshold_bps;
+                    // Momentum continuity: delta must still be growing (not mean-reverting)
+                    // The source tracker's last_delta should agree in direction with this delta
+                    let momentum_fresh = delta_bps.signum() == self.tracker_a.last_delta_bps.signum()
+                        || self.tracker_a.last_delta_bps == 0.0;
+                    direction_match && sufficient_gap && momentum_fresh
                 } else {
                     false
                 };
@@ -350,8 +370,16 @@ impl ImpulseDetector {
 
                 let other_is_lagging = if let (Some(src), Some(tgt)) = (source_mid, target_mid) {
                     let spread_bps = (src - tgt) / tgt * 10_000.0;
-                    spread_bps.abs() > self.lag_threshold_bps
-                        && (delta_bps > 0.0) == (spread_bps > 0.0)
+                    let direction_match = (delta_bps > 0.0) == (spread_bps > 0.0);
+                    let sufficient_gap = spread_bps.abs() > self.lag_threshold_bps;
+                    // Momentum continuity: use the tracker that just updated
+                    let last_delta = match venue {
+                        VenueId::EXCHANGE_A => self.tracker_a.last_delta_bps,
+                        _ => self.tracker_b.last_delta_bps,
+                    };
+                    let momentum_fresh =
+                        delta_bps.signum() == last_delta.signum() || last_delta == 0.0;
+                    direction_match && sufficient_gap && momentum_fresh
                 } else {
                     false
                 };

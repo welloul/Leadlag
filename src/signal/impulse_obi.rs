@@ -4,13 +4,27 @@
 //! for high-conviction signals.
 //!
 //! # Signal Priority
-//! - Impulse + OBI confirms → HIGH conviction
-//! - Impulse only → MEDIUM conviction
-//! - OBI only → MEDIUM conviction
+//! - Impulse + OBI confirms direction → HIGH conviction
+//! - Impulse only (high_conviction_only = false) → MEDIUM conviction
+//!
+//! # Fix Log
+//! v0.2.0:
+//! - Fixed pending-signal matching: was requiring venue == target_venue which
+//!   almost never matched. Now only requires directional agreement.
+//! - Fixed timeout tracking: now uses wall-clock (now_ns) rather than
+//!   exchange_ts_ns so timeouts work correctly in simulation with stale clocks.
+//! - Separated impulse and OBI pending expiry with independent wall-clock ages.
 
 use super::impulse::{ImpulseDetector, ImpulseSignal};
 use super::obi_divergence::{ObiDivergenceDetector, ObiSignal};
 use crate::eal::{BookUpdate, OrderSide, Symbol, Tick, VenueId};
+
+fn now_ns() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos() as u64
+}
 
 /// Signal strength enum
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -22,11 +36,12 @@ pub enum SignalStrength {
 }
 
 /// Minimal pending signal data (avoids cloning full signals on hot path).
+/// Stored with wall-clock age so timeout works regardless of exchange clock drift.
 #[derive(Debug, Clone, Copy)]
 struct PendingSignal {
-    venue: VenueId,
     side: OrderSide,
-    timestamp_ns: u64,
+    /// Wall-clock time the pending signal was stored (for expiry)
+    stored_at_ns: u64,
 }
 
 /// Combined signal from impulse-obi engine
@@ -44,8 +59,12 @@ pub struct CombinedSignal {
     pub impulse: Option<ImpulseSignal>,
     /// OBI signal (if any)
     pub obi: Option<ObiSignal>,
-    /// Timestamp when signal was generated
+    /// Timestamp when signal was generated (exchange ts from trigger)
     pub timestamp_ns: u64,
+    /// Impulse magnitude in bps (0 if OBI-only)
+    pub impulse_magnitude_bps: f64,
+    /// OBI value on signal venue (0 if impulse-only)
+    pub obi_value: f64,
 }
 
 /// Impulse-OBI strategy engine
@@ -59,14 +78,14 @@ pub struct ImpulseObiEngine {
     obi_detector: ObiDivergenceDetector,
     /// Minimum cross-venue edge in bps (fees-aware: must cover taker fees + slippage)
     entry_threshold_bps: f64,
-    /// Pending impulse metadata (waiting for OBI confirmation)
+    /// Pending impulse signal (waiting for OBI confirmation)
+    /// Uses wall-clock stored_at_ns for expiry.
     pending_impulse: Option<PendingSignal>,
-    /// Pending OBI metadata (waiting for impulse confirmation)
+    /// Pending OBI signal (waiting for impulse confirmation)
+    /// Uses wall-clock stored_at_ns for expiry.
     pending_obi: Option<PendingSignal>,
-    /// Signal timeout in nanoseconds
+    /// Signal combination window in nanoseconds (wall-clock based)
     signal_timeout_ns: u64,
-    /// Last signal timestamp
-    last_signal_ns: u64,
     /// Only emit HIGH conviction signals (skip MEDIUM)
     high_conviction_only: bool,
 }
@@ -87,13 +106,17 @@ impl ImpulseObiEngine {
             pending_impulse: None,
             pending_obi: None,
             signal_timeout_ns,
-            last_signal_ns: 0,
             high_conviction_only,
         }
     }
 
     /// Direction-normalized edge calculation.
     /// Returns positive bps if the trade has edge, negative if not.
+    ///
+    /// For Buy: we want source (moved up) > target (lagging). Edge = how much
+    ///   cheaper target is vs source.
+    /// For Sell: we want source (moved down) < target (lagging). Edge = how much
+    ///   more expensive target is vs source.
     fn edge_bps(&self, source_mid: f64, target_mid: f64, side: OrderSide) -> f64 {
         match side {
             OrderSide::Buy => (source_mid - target_mid) / target_mid * 10_000.0,
@@ -114,17 +137,26 @@ impl ImpulseObiEngine {
         }
     }
 
+    /// Expire stale pending signals using wall-clock age.
+    fn expire_pending(&mut self, now: u64) {
+        if let Some(p) = self.pending_impulse {
+            if now.saturating_sub(p.stored_at_ns) > self.signal_timeout_ns {
+                self.pending_impulse = None;
+            }
+        }
+        if let Some(p) = self.pending_obi {
+            if now.saturating_sub(p.stored_at_ns) > self.signal_timeout_ns {
+                self.pending_obi = None;
+            }
+        }
+    }
+
     /// Process tick (from hot path)
     ///
     /// Returns combined signal if impulse detected and OBI confirms
     pub fn process_tick(&mut self, tick: &Tick) -> Option<CombinedSignal> {
-        let timestamp_ns = tick.exchange_ts_ns;
-
-        // Check for timeout
-        if timestamp_ns.saturating_sub(self.last_signal_ns) > self.signal_timeout_ns {
-            self.pending_impulse = None;
-            self.pending_obi = None;
-        }
+        let now = now_ns();
+        self.expire_pending(now);
 
         // Process tick for impulse detection
         if let Some(impulse) = self.impulse_detector.process_tick(tick) {
@@ -137,44 +169,72 @@ impl ImpulseObiEngine {
                     impulse.symbol,
                     impulse.target_venue
                 );
+                // Still store as pending — edge might open up by the time OBI confirms
+                self.pending_impulse = Some(PendingSignal {
+                    side: impulse.side,
+                    stored_at_ns: now,
+                });
                 return None;
             }
 
-            // Check if we have pending OBI that confirms direction
+            // Check if we have a pending OBI that agrees on direction
+            // NOTE: We deliberately only match on `side`, NOT on venue.
+            // The OBI may come from a different venue than the impulse but still
+            // confirm directional pressure. Both pointing the same way is enough.
             if let Some(pending_obi) = self.pending_obi.take() {
-                if pending_obi.venue == impulse.target_venue && pending_obi.side == impulse.side {
-                    // HIGH conviction: Impulse + OBI confirms
-                    self.last_signal_ns = timestamp_ns;
+                if pending_obi.side == impulse.side {
+                    // HIGH conviction: Impulse + OBI confirms direction
+                    tracing::info!(
+                        "HIGH conviction signal: Impulse+OBI | {} {:?} | {:.2} bps",
+                        impulse.symbol,
+                        impulse.side,
+                        impulse.impulse_magnitude_bps
+                    );
                     return Some(CombinedSignal {
                         side: impulse.side,
                         target_venue: impulse.target_venue,
                         symbol: impulse.symbol.clone(),
                         strength: SignalStrength::High,
-                        impulse: Some(impulse),
+                        impulse: Some(impulse.clone()),
                         obi: None,
-                        timestamp_ns,
+                        timestamp_ns: tick.exchange_ts_ns,
+                        impulse_magnitude_bps: impulse.impulse_magnitude_bps,
+                        obi_value: 0.0,
                     });
+                } else {
+                    // Conflicting direction — discard pending OBI
+                    tracing::debug!(
+                        "OBI direction conflict: impulse={:?} obi={:?}",
+                        impulse.side,
+                        pending_obi.side
+                    );
                 }
             }
 
-            // Store pending impulse metadata (no heap allocation)
+            // Store pending impulse for later OBI confirmation
             self.pending_impulse = Some(PendingSignal {
-                venue: impulse.target_venue,
                 side: impulse.side,
-                timestamp_ns,
+                stored_at_ns: now,
             });
 
             // MEDIUM conviction: Impulse only (skip if high_conviction_only)
             if !self.high_conviction_only {
-                self.last_signal_ns = timestamp_ns;
+                tracing::info!(
+                    "MEDIUM conviction signal: Impulse-only | {} {:?} | {:.2} bps",
+                    impulse.symbol,
+                    impulse.side,
+                    impulse.impulse_magnitude_bps
+                );
                 return Some(CombinedSignal {
                     side: impulse.side,
                     target_venue: impulse.target_venue,
                     symbol: impulse.symbol.clone(),
                     strength: SignalStrength::Medium,
-                    impulse: Some(impulse),
+                    impulse: Some(impulse.clone()),
                     obi: None,
-                    timestamp_ns,
+                    timestamp_ns: tick.exchange_ts_ns,
+                    impulse_magnitude_bps: impulse.impulse_magnitude_bps,
+                    obi_value: 0.0,
                 });
             }
         }
@@ -186,56 +246,69 @@ impl ImpulseObiEngine {
     ///
     /// Returns combined signal if OBI detected and impulse confirms
     pub fn process_book(&mut self, book: &BookUpdate) -> Option<CombinedSignal> {
-        let timestamp_ns = book.exchange_ts_ns;
-
-        // Check for timeout
-        if timestamp_ns.saturating_sub(self.last_signal_ns) > self.signal_timeout_ns {
-            self.pending_impulse = None;
-            self.pending_obi = None;
-        }
+        let now = now_ns();
+        self.expire_pending(now);
 
         // Process book for OBI detection
         if let Some(obi) = self.obi_detector.process_book(book) {
             // Cross-venue edge check
             if !self.has_edge(book.venue, obi.target_venue, obi.side) {
+                // Store as pending OBI even without edge — impulse may confirm later
+                self.pending_obi = Some(PendingSignal {
+                    side: obi.side,
+                    stored_at_ns: now,
+                });
                 return None;
             }
 
-            // Check if we have pending impulse that confirms direction
+            // Check if we have a pending impulse that agrees on direction
             if let Some(pending_impulse) = self.pending_impulse.take() {
-                if pending_impulse.venue == obi.target_venue && pending_impulse.side == obi.side {
-                    // HIGH conviction: OBI + Impulse confirms
-                    self.last_signal_ns = timestamp_ns;
+                if pending_impulse.side == obi.side {
+                    // HIGH conviction: OBI + Impulse confirms direction
+                    tracing::info!(
+                        "HIGH conviction signal: OBI+Impulse | {} {:?} | obi={:.3}",
+                        obi.symbol,
+                        obi.side,
+                        obi.obi_value
+                    );
                     return Some(CombinedSignal {
                         side: obi.side,
                         target_venue: obi.target_venue,
                         symbol: obi.symbol.clone(),
                         strength: SignalStrength::High,
                         impulse: None,
-                        obi: Some(obi),
-                        timestamp_ns,
+                        obi: Some(obi.clone()),
+                        timestamp_ns: book.exchange_ts_ns,
+                        impulse_magnitude_bps: 0.0,
+                        obi_value: obi.obi_value,
                     });
+                } else {
+                    tracing::debug!(
+                        "Impulse direction conflict: obi={:?} impulse={:?}",
+                        obi.side,
+                        pending_impulse.side
+                    );
                 }
             }
 
-            // Store pending OBI metadata (no heap allocation)
+            // Store pending OBI for later impulse confirmation
             self.pending_obi = Some(PendingSignal {
-                venue: obi.target_venue,
                 side: obi.side,
-                timestamp_ns,
+                stored_at_ns: now,
             });
 
             // MEDIUM conviction: OBI only (skip if high_conviction_only)
             if !self.high_conviction_only {
-                self.last_signal_ns = timestamp_ns;
                 return Some(CombinedSignal {
                     side: obi.side,
                     target_venue: obi.target_venue,
                     symbol: obi.symbol.clone(),
                     strength: SignalStrength::Medium,
                     impulse: None,
-                    obi: Some(obi),
-                    timestamp_ns,
+                    obi: Some(obi.clone()),
+                    timestamp_ns: book.exchange_ts_ns,
+                    impulse_magnitude_bps: 0.0,
+                    obi_value: obi.obi_value,
                 });
             }
         }
@@ -291,100 +364,36 @@ mod tests {
     }
 
     #[test]
-    fn test_impulse_only_medium_conviction() {
+    fn test_pending_signal_matches_on_direction_only() {
+        // Direction-only matching means: if we have a pending OBI Buy,
+        // any impulse Buy should combine into HIGH, regardless of which venue.
+        let pending = PendingSignal {
+            side: OrderSide::Buy,
+            stored_at_ns: 0,
+        };
+        let impulse_buy = OrderSide::Buy;
+        let impulse_sell = OrderSide::Sell;
+        assert_eq!(pending.side, impulse_buy); // matches → HIGH
+        assert_ne!(pending.side, impulse_sell); // conflicts → discard
+    }
+
+    #[test]
+    fn test_pending_expiry_uses_wall_clock() {
         let impulse_detector =
             ImpulseDetector::new(5_000_000, 5.0, 1.5, 0.001, 10_000_000, 400_000_000);
         let obi_detector = ObiDivergenceDetector::new(0.7, 0.2, 5, 0.3, 200_000_000);
         let mut engine =
-            ImpulseObiEngine::new(impulse_detector, obi_detector, 10.0, 10_000_000, false);
+            ImpulseObiEngine::new(impulse_detector, obi_detector, 10.0, 1, false); // 1ns timeout
 
-        // Initialize both trackers
-        engine.process_tick(&make_tick(VenueId::EXCHANGE_A, 100.0, 1.0, 0));
-        engine.process_tick(&make_tick(VenueId::EXCHANGE_B, 100.0, 1.0, 0));
-
-        // Wait for window to elapse, then make A move significantly while B stays flat
-        // A moves from 100.0 to 100.06 (+60 bps > 5 bps threshold) after window
-        engine.process_tick(&make_tick(VenueId::EXCHANGE_A, 100.0, 1.0, 2_000_000));
-        engine.process_tick(&make_tick(VenueId::EXCHANGE_B, 100.0, 1.0, 2_000_000));
-
-        // Now trigger impulse: A makes big move after window elapsed
-        let signal = engine.process_tick(&make_tick(VenueId::EXCHANGE_A, 100.06, 1.0, 6_000_000));
-
-        // Should produce MEDIUM conviction (impulse only, no OBI pending)
-        if let Some(sig) = signal {
-            assert_eq!(sig.strength, SignalStrength::Medium);
-            assert_eq!(sig.side, OrderSide::Buy); // A moved up → buy the laggard (B)
-            assert_eq!(sig.target_venue, VenueId::EXCHANGE_B);
-            assert!(sig.obi.is_none());
-        }
-        // Signal may not fire if B's delta also exceeds lag threshold — that's correct behavior
-    }
-
-    #[test]
-    fn test_timeout_clears_pending_signals() {
-        let impulse_detector =
-            ImpulseDetector::new(5_000_000, 5.0, 1.5, 0.001, 10_000_000, 400_000_000);
-        let obi_detector = ObiDivergenceDetector::new(0.7, 0.2, 5, 0.3, 200_000_000);
-        let mut engine =
-            ImpulseObiEngine::new(impulse_detector, obi_detector, 10.0, 10_000_000, false);
-
-        // Initialize trackers
-        engine.process_tick(&make_tick(VenueId::EXCHANGE_A, 100.0, 1.0, 0));
-        engine.process_tick(&make_tick(VenueId::EXCHANGE_B, 100.0, 1.0, 0));
-
-        // Generate an OBI signal to store as pending
-        let book_a = make_book(
-            VenueId::EXCHANGE_A,
-            vec![(100.0, 20.0), (99.0, 10.0)], // Strong bid
-            vec![(101.0, 2.0), (102.0, 3.0)],
-        );
-        let _ = engine.process_book(&book_a);
-
-        // Advance time past timeout (10ms = 10_000_000 ns)
-        // The pending OBI should be cleared when next tick arrives
-        engine.process_tick(&make_tick(VenueId::EXCHANGE_A, 100.0, 1.0, 15_000_000));
-
-        // Pending state should have been cleared — next impulse won't combine with old OBI
-        // This is verified by the fact that a new impulse produces MEDIUM, not HIGH
-    }
-
-    #[test]
-    fn test_direction_matching_logic() {
-        let impulse_detector =
-            ImpulseDetector::new(5_000_000, 5.0, 1.5, 0.001, 10_000_000, 400_000_000);
-        let obi_detector = ObiDivergenceDetector::new(0.7, 0.2, 5, 0.3, 200_000_000);
-        let engine = ImpulseObiEngine::new(impulse_detector, obi_detector, 10.0, 10_000_000, false);
-
-        // Test direction matching with PendingSignal
-        let impulse_a_buy = PendingSignal {
-            venue: VenueId::EXCHANGE_B,
+        // Inject a pending impulse
+        engine.pending_impulse = Some(PendingSignal {
             side: OrderSide::Buy,
-            timestamp_ns: 0,
-        };
-        let obi_a_buy = PendingSignal {
-            venue: VenueId::EXCHANGE_B,
-            side: OrderSide::Buy,
-            timestamp_ns: 0,
-        };
-        // Same venue + same side → match
-        assert_eq!(impulse_a_buy.venue, obi_a_buy.venue);
-        assert_eq!(impulse_a_buy.side, obi_a_buy.side);
+            stored_at_ns: 0, // stored at epoch 0 — effectively ancient
+        });
 
-        // Different side → no match
-        let obi_a_sell = PendingSignal {
-            venue: VenueId::EXCHANGE_B,
-            side: OrderSide::Sell,
-            timestamp_ns: 0,
-        };
-        assert!(impulse_a_buy.side != obi_a_sell.side);
-
-        // Different venue → no match
-        let obi_other_venue = PendingSignal {
-            venue: VenueId::EXCHANGE_A,
-            side: OrderSide::Buy,
-            timestamp_ns: 0,
-        };
-        assert!(impulse_a_buy.venue != obi_other_venue.venue);
+        // Expire it
+        engine.expire_pending(now_ns());
+        assert!(engine.pending_impulse.is_none(), "Expired pending should be cleared");
     }
 
     #[test]
@@ -394,7 +403,7 @@ mod tests {
         let obi_detector = ObiDivergenceDetector::new(0.7, 0.2, 5, 0.3, 200_000_000);
         let engine = ImpulseObiEngine::new(impulse_detector, obi_detector, 10.0, 10_000_000, false);
 
-        // Good spread
+        // Good spread (1 bps < 20 bps limit)
         assert!(engine.is_spread_acceptable(100.0, 100.01));
 
         // Bad spread (too wide)

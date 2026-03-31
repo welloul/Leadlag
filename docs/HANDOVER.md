@@ -4,8 +4,8 @@
 
 | Aspect | Status |
 |--------|--------|
-| **Phase** | Paper Trading (v0.1.3) |
-| **Stability** | All 158 tests passing |
+| **Phase** | Paper Trading (v0.1.4) |
+| **Stability** | All 69 tests passing |
 | **Live Trading** | Disabled (simulation only) |
 | **API Keys** | Not required (market data is public) |
 | **Active Strategy** | Impulse-OBI (both exchanges live on AWS) |
@@ -30,7 +30,7 @@
 3. **Impulse sanity check** — Deltas > 500 bps are rejected as initialization artifacts.
 4. **Conservative fill** — Only fills 50% of best level size. Real books shift during latency.
 5. **Binance diff stream gap recovery** — When `prev_final_update_id != last_update_id`, the book is marked unsynced but doesn't re-fetch the REST snapshot. Needs a re-sync mechanism.
-6. **`other_is_lagging` restored** — Now checks `current_delta() < lag_threshold_bps` (was hardcoded `true`). Some signals lost due to HL slow tick rate.
+6. **`other_is_lagging` tuned** — Checks `current_delta() < lag_threshold_bps` (1.0 bps). Prevents trading when other venue is moving significantly.
 
 ### RECENT FIXES (v0.1.3 — Entry Logic Tightening)
 1. **Freshness gate 400ms** — Both venues must have received a tick within 400ms (local time). Prevents trading against stale data.
@@ -45,6 +45,15 @@
 10. **TTL 500ms** — Signal time-to-live reduced from 1500ms to 500ms.
 11. **Combo window 150ms** — `signal_timeout_ms` increased from 10ms to 150ms.
 12. **400ms book age gate** — Hard reject if target venue book > 400ms stale.
+
+### RECENT FIXES (v0.1.4 — OBI-Impulse Bug Fixes and Retunes)
+1. **Fixed freshness gate** — Now compares local wall-clock timestamps against `now_ns()`, preventing exchange timestamp drift from breaking staleness detection (was comparing exchange_ts vs wall_clock, causing underflow).
+2. **Fixed combination logic** — HIGH conviction now requires directionally-consistent side only (`pending.side == incoming.side`), not venue matching. Eliminates impossible HIGH signals.
+3. **Fixed signal expiry** — Pending signals expire via wall-clock `stored_at_ns` vs `now_ns()`, not unreliable exchange timestamps that break in simulation.
+4. **Added momentum filter** — Impulse must agree in sign with previous delta to avoid reversion trades. Guards against false positives after price has already moved.
+5. **Retuned parameters for signal quality** — `impulse_threshold_bps = 10` (was 5), `entry_threshold_bps = 5` (was 8), `obi_persist_ms = 30` (was 200), `signal_timeout_ms = 250` (was 150), `lag_threshold_bps = 1.0` (was 1.5).
+6. **Schema precision** — `lag_threshold_bps` changed to `f64` for fractional bps thresholds.
+7. **Per-symbol state isolation** — ImpulseObiEngine instances now properly isolated per symbol (handled in routing), preventing cross-symbol pollution.
 
 ### RECENT FIXES (v0.1.2 — AWS Deployment & Real L2 Books)
 1. Real L2 order book subscriptions (Binance `@depth@100ms`, Hyperliquid `l2Book`)
@@ -86,19 +95,19 @@ disown
 [strategy]
 active_strategy = "impulse_obi"
 symbols = ["ZEC", "WLD", "FARTCOIN", "DOGE", "SUI", "BCH", "PUMP", "ADA"]
-impulse_threshold_bps = 5
-lag_threshold_bps = 1.5
+impulse_threshold_bps = 10
+lag_threshold_bps = 1.0
 impulse_window_ms = 5
-signal_timeout_ms = 150         # Combo window
+signal_timeout_ms = 250         # Combo window
 min_trade_size_filter = 0.001
 spread_filter_bps = 10
 
-# Entry logic tightening (v0.1.3)
+# Entry logic tightening (v0.1.4)
 venue_freshness_ms = 400
-entry_threshold_bps = 8         # Fees-aware minimum edge
+entry_threshold_bps = 5         # Fees-aware minimum edge
 cooldown_ms = 200               # Side-aware
 max_levels_consumed = 3
-obi_persist_ms = 200
+obi_persist_ms = 30
 fill_conservatism = 0.5
 
 [risk]

@@ -85,7 +85,7 @@ impl<const N: usize> SignalPipeline<N> {
             let impulse_detector = ImpulseDetector::new(
                 window_ns,
                 settings.impulse_threshold_bps as f64,
-                settings.lag_threshold_bps as f64,
+                settings.lag_threshold_bps,
                 settings.min_trade_size_filter,
                 signal_timeout_ns,
                 venue_freshness_ns,
@@ -317,7 +317,7 @@ mod tests {
             enable_obi: false,
             obi_weight: 0.0,
             impulse_threshold_bps: 5,
-            lag_threshold_bps: 1,
+            lag_threshold_bps: 1.0,
             impulse_window_ms: 5,
             signal_timeout_ms: 10,
             min_trade_size_filter: 0.001,

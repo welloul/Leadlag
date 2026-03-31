@@ -1,9 +1,9 @@
 
-## System Overview (v0.1.3)
+## System Overview (v0.1.4)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                           TokioParasite v0.1.3                                  │
+│                           TokioParasite v0.1.4                                  │
 │                     Lead-Lag Arbitrage Engine                                    │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
@@ -22,19 +22,20 @@
 │  ┌─────────────────────────────────────────────────────────────────────────┐   │
 │  │                      MAIN LOOP (Async Tokio Task)                        │   │
 │  │                                                                          │   │
-│  │  ┌───────────────── ENTRY LOGIC (v0.1.3) ─────────────────────────────┐  │   │
+│  │  ┌───────────────── ENTRY LOGIC (v0.1.4) ─────────────────────────────┐  │   │
 │  │  │                                                                    │  │   │
 │  │  │  Impulse path:                                                     │  │   │
 │  │  │  ├─ Freshness gate (400ms local)                                   │  │   │
 │  │  │  ├─ Warmup gate (both trackers init + warmed)                      │  │   │
 │  │  │  ├─ Sanity check (delta < 500 bps)                                 │  │   │
-│  │  │  ├─ Lag check (other delta < 1.5 bps)                              │  │   │
-│  │  │  ├─ Edge check (8 bps fees-aware, direction-normalized)            │  │   │
+│  │  │  ├─ Lag check (other delta < 1.0 bps)                              │  │   │
+│  │  │  ├─ Momentum filter (current delta agrees with previous sign)     │  │   │
+  │  │  ├─ Edge check (5 bps fees-aware, direction-normalized)            │  │   │
 │  │  │  └─ Cooldown (200ms per symbol+side)                               │  │   │
 │  │  │                                                                    │  │   │
 │  │  │  OBI path:                                                         │  │   │
 │  │  │  ├─ Weighted OBI (depth-weighted, top levels dominate)             │  │   │
-│  │  │  ├─ Time-based persistence (200ms, not count-based)                │  │   │
+│  │  │  ├─ Time-based persistence (30ms, not count-based)                 │  │   │
 │  │  │  └─ Edge check (same fees-aware threshold)                         │  │   │
 │  │  │                                                                    │  │   │
 │  │  │  Position cap: $100 per (venue, symbol), direction-aware           │  │   │
@@ -88,7 +89,7 @@
 │                                                              ▼                  │
 │                                                        TradeSignal              │
 │                                                                                 │
-│  IMPULSE-OBI PATH (v0.1.3):                                                    │
+│  IMPULSE-OBI PATH (v0.1.4):                                                    │
 │  ──────────────────────────                                                     │
 │  Tick A ──▶ process_tick() ──▶ ImpulseDetector.process_tick()                   │
 │                                    │                                            │
@@ -96,24 +97,24 @@
 │                                    ├─ Local freshness check (400ms)             │
 │                                    ├─ Both trackers init + warmed up?           │
 │                                    ├─ Sanity: delta < 500 bps?                  │
-│                                    ├─ Lag: other |delta| < 1.5 bps?             │
-│                                    ├─ Edge: cross-venue spread ≥ 8 bps?         │
+│                                    ├─ Lag: other |delta| < 1.0 bps?             │
+│                                    ├─ Edge: cross-venue spread ≥ 5 bps?         │
 │                                    └─ If all pass → ImpulseSignal               │
 │                                                                                 │
 │  Book A ──▶ process_book() ──▶ ObiDivergenceDetector.process_book()             │
 │                                    │                                            │
 │                                    ├─ Depth-weighted OBI (1/(i+1) weights)      │
-│                                    ├─ Time-based persistence (200ms)            │
+│                                    ├─ Time-based persistence (30ms)            │
 │                                    ├─ Divergence: one strong, other neutral?    │
 │                                    └─ If yes → ObiSignal                        │
 │                                                                                 │
 │  ImpulseObiEngine combines:                                                     │
-│  ├─ Edge check (8 bps direction-normalized)                                    │
+│  ├─ Edge check (5 bps direction-normalized)                                    │
 │  ├─ Pending impulse + incoming OBI → HIGH conviction                           │
 │  ├─ Pending OBI + incoming impulse → HIGH conviction                           │
 │  ├─ Impulse only → MEDIUM conviction                                           │
 │  ├─ OBI only → MEDIUM conviction                                               │
-│  └─ Timeout (150ms) clears pending signals                                     │
+│  └─ Timeout (250ms) clears pending signals                                     │
 │                                                                                 │
 │  OMS gates:                                                                    │
 │  ├─ Cooldown: 200ms per (symbol, side)                                         │
