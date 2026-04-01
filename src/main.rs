@@ -30,6 +30,9 @@ use tracing::{info, warn};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Load environment variables from .env if present
+    dotenv::dotenv().ok();
+    
     // Load settings
     let settings = Settings::load()?;
     init_logging(&settings.app.log_level);
