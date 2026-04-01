@@ -40,7 +40,7 @@ pub struct HyperliquidLiveExecutor {
     fill_tx: Arc<Mutex<Option<Sender<FillEvent>>>>,
     asset_ctx: Arc<tokio::sync::RwLock<std::collections::HashMap<String, u32>>>,
     /// CLOIDs of orders rejected by HL — drained every 500ms by OMS to clean pending_orders
-    pub rejected_cloids: Arc<Mutex<Vec<String>>>,
+    pub rejected_cloids: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl HyperliquidLiveExecutor {
@@ -54,7 +54,7 @@ impl HyperliquidLiveExecutor {
             wallet_secret,
             fill_tx: Arc::new(Mutex::new(None)),
             asset_ctx: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
-            rejected_cloids: Arc::new(Mutex::new(Vec::new())),
+            rejected_cloids: Arc::new(std::sync::Mutex::new(Vec::new())),
         }
     }
 
