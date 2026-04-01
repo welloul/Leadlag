@@ -208,15 +208,21 @@ impl HyperliquidLiveExecutor {
             // PRE-FLIGHT FORMATTING: Hyperliquid strongly enforces string-formatted decimals
             // and exact Time-In-Force (TiF) codes.
             let is_buy = matches!(order.side, crate::eal::OrderSide::Buy);
-            let limit_price = order.price.unwrap_or(0.0).to_string();
             let sz = order.size.to_string();
-            
-            // Critical Parameter: Post-Only Mapping
-            // HL limit orders use "Alo" (Add Liquidity Only) to guarantee Maker fees.
-            let tif_obj = if order.post_only {
-                serde_json::json!({ "limit": { "tif": "Alo" } })
+            let (limit_price, tif_obj) = if order.post_only {
+                (order.price.unwrap_or(0.0).to_string(), serde_json::json!({ "limit": { "tif": "Alo" } }))
+            } else if order.order_type == crate::eal::OrderType::Market {
+                // For Market orders, we use a wide-boundary IOC to guarantee fill.
+                // Buy at extreme high price, Sell at extreme low price. 
+                // HL handles this effectively via its matching engine.
+                let p = if is_buy { 
+                    "1000000.0".to_string() 
+                } else { 
+                    "0.01".to_string() 
+                };
+                (p, serde_json::json!({ "limit": { "tif": "Ioc" } }))
             } else {
-                serde_json::json!({ "limit": { "tif": "Ioc" } })
+                (order.price.unwrap_or(0.0).to_string(), serde_json::json!({ "limit": { "tif": "Ioc" } }))
             };
 
             // Dynamically resolve exact API payload mappings at flight time

@@ -26,20 +26,21 @@
 │  │  │                                                                    │  │   │
 │  │  │  Impulse + OBI Convergence ──▶ CALC MID PRICE ──▶ POST-ONLY LIMIT  │  │   │
 │  │  │                                                                    │  │   │
-│  │  │  FILL EVENT ──▶ AUTOMATED TAKE-PROFIT (+13.0 bps)                  │  │   │
+│  │  │  FILL EVENT ──▶ AUTOMATED TP (sized 1:1 with fill)                 │  │   │
 │  │  │                                                                    │  │   │
-│  │  │  ALPHA DECAY TIMEOUT ──▶ MARKET EXIT (IOC)                         │  │   │
+│  │  │  ALPHA DECAY TIMEOUT ──▶ REDUCE-ONLY EXIT (IOC)                    │  │   │
 │  │  └────────────────────────────────────────────────────────────────────┘  │   │
 │  │                                                                          │   │
 │  │  OMS GATES (v0.2.0):                                                     │   │
 │  │  ├─ Cooldown: 200ms per (symbol, side)                                   │   │
-│  │  ├─ Position cap: $100 per (venue, symbol)                               │   │
+│  │  ├─ Position cap: DYNAMIC (Filled + Pending)                             │   │
 │  │  ├─ Maker check: Mid-price calculation + Post-Only tag                   │   │
+│  │  ├─ Reduce-Only: Safe position reduction for TP/Exits                    │   │
 │  │  ├─ Take-Profit: Auto-submit at +13 bps upon entry fill                  │   │
 │  │  ├─ Tiered Exit: symbol_timeouts[sym] (1000ms - 2500ms)                  │   │
 │  │  └─ Hot-Reload: 15s config watcher sync                                  │   │
 │  │                                                                          │   │
-│  │  signal → oms.process_signal() → PaperSimulator                          │   │
+│  │  signal → oms.process_signal() → HyperliquidLiveExecutor                 │   │
 │  └─────────────────────────────────────────────────────────────────────────┘   │
 │                                                     │                          │
 │                                                     ▼                          │
@@ -87,8 +88,9 @@
 │                                                                                 │
 │  OMS EXECUTION (THE MAKER SHIFT):                                               │
 │  ├─ ENTRY (Post-Only): Place limit at mid-price.                                │
-│  ├─ TP (Limit): Fill trigger -> Auto-Submit TP at entry + 13bps.                │
+│  ├─ TP (Limit): Fill trigger -> Auto-Submit 1:1 TP at entry + 13bps.            │
 │  ├─ SL (Time-based): Loop checks age vs symbol_timeouts.                        │
+│  ├─ SYNC: Dynamic exposure sum (NetDelta + Pending).                            │
 │  └─ RELOAD: 15s heart-beat filesystem configuration refresh.                    │
 │                                                                                 │
 └─────────────────────────────────────────────────────────────────────────────────┘

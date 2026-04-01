@@ -24,8 +24,12 @@ Provide a unified trait-based interface for exchange connectivity. Implements re
 - Hyperliquid: `l2Book` channel on existing WS (alongside `trades`)
 
 ### `OrderExecution::submit_order(order) -> Result<OrderAck>`
-- PaperSimulator: per-venue L2 matching with conservative fill
-- Live exchanges: not implemented (paper trading only)
+- **PaperSimulator**: per-venue L2 matching with conservative fill
+- **HyperliquidLiveExecutor**: 
+    - EIP-712 cryptographic signing (`ethers-core`)
+    - Non-blocking async dispatch (`tokio::spawn`)
+    - Post-Only (`tif: Alo`) and Reduce-Only support
+    - Boot-time Meta State synchronization (`/info` meta)
 
 ## Binance L2 Book (v0.1.2)
 
@@ -84,3 +88,20 @@ synced: bool
 |----------|-----------|-----------|-------------|
 | Binance (A) | ~79/sec | ~80/sec | `@depth@100ms` diff |
 | Hyperliquid (B) | ~1.3/sec | ~4/sec | `l2Book` snapshot per block |
+
+## Hyperliquid Live Execution (v0.2.0)
+
+**Endpoint:** `https://api.hyperliquid.xyz/exchange` (REST for submission)
+
+**Workflow:**
+1. **Boot Sync**: Calls `load_asset_context()` to fetch `asset_index` mappings from `/info`.
+2. **Signature Pipeline**:
+    - Serializes `action` JSON to canonical MessagePack.
+    - Hashes with Keccak256.
+    - Signs EIP-712 Typed Data with API Private Key.
+3. **Async Dispatch**: `submit_order` spawns a detached task; returns `OrderAck(Pending)` immediately.
+4. **Fills**: Verified via authenticated WebSocket `userEvents` stream.
+
+**Security Firewall:**
+- Secondary hardware-check in `hyperliquid_exec.rs` limits max absolute notional to $50.0 regardless of `settings.toml`.
+- Rejects any non-Post-Only order in entry phase.

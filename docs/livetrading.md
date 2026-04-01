@@ -1,78 +1,63 @@
 # TokioParasite: Live Trading Implementation Plan (Hyperliquid)
 
 ## 🎯 Objective
-Transition the TokioParasite bot from `PaperSimulator` to live asynchronous execution exclusively on **Hyperliquid**. The focus is strictly on Hyperliquid's REST/WebSocket execution infrastructure since Binance API keys are not yet available. The implementation must adhere to **ultra-low-latency** and **non-blocking** async patterns to preserve the strategy's competitive edge.
+Transition the TokioParasite bot from `PaperSimulator` to live asynchronous execution exclusively on **Hyperliquid**. The implementation adheres to **ultra-low-latency** and **non-blocking** async patterns to preserve the strategy's competitive edge.
 
 ## 🏗️ Architectural Overview
 The bot's core execution flow relies on the `OrderExecution` trait within the Exchange Abstraction Layer (EAL).
-Currently, `PaperSimulator` implements this trait. We will build `HyperliquidLiveExecutor` to implement the same trait, seamlessly hot-swapping the execution engine based on `settings.simulation.enabled`.
+The `HyperliquidLiveExecutor` handles real-world connectivity, cryptographic signing, and order synchronization.
 
-### Design Guidelines (Based on Skills)
-*   **Rust Pro & Best Practices**: Minimize allocation in the hot path. Order JSON payloads and EIP-712 signature hashes shouldn't repeatedly allocate Strings where borrowing or static arrays suffice.
-*   **Async Patterns**: HTTP POST requests (`reqwest`) or WebSocket submits take 10-50ms. The main heartbeat loop **cannot** await these. `submit_order` must return immediately (or spawn an asynchronous detached task) and we will rely on Hyperliquid's WebSocket `user` trades channel to feed our `fill_tx` channel.
-*   **Refactor Helper**: Isolate the live execution logic in `src/eal/hyperliquid_exec.rs` instead of cluttering the market data ingest logic in `hyperliquid.rs`.
+## ✅ Completed Fixes (v0.2.0)
 
----
+### 1. Boot-Time Meta State Sync
+*   **Problem**: Hyperliquid L1 transactions require a numeric `asset_index`. Hardcoding these is dangerous as the universe changes.
+*   **Solution**: On startup, the executor halts and calls `load_asset_context()`. It fetches the `meta` state from `/info`, maps symbol names (e.g., "DOGE") to canonical indexes, and verifies trades against this live map.
+*   **Safety**: If a symbol is missing from the Meta State but exists in our config, the bot triggers a **FATAL ABORT** to prevent invalid signature crashes.
 
-## 📋 Iteration Steps
+### 2. Entry & Partial Fills (The "Double TP" Fix)
+*   **Problem**: `process_fill()` previously sized Take-Profits based on total `cumulative_size`. Partial fills would cause the bot to sprout multiple full-sized TP orders, creating massive over-exposure.
+*   **Solution**: TP orders are now sized exactly to `fill.filled_size`. The logic explicitly identifies `is_entry` bounds to ensure exits don't trigger recursive TP spawns.
 
-### Step 1: Configuration & Routing Toggle
-1.  **Objective**: Dynamically assign the execution engine based on `settings.toml`.
-2.  **Actions**:
-    *   In `main.rs`, locate the `simulator` initialization.
-    *   Refactor to a boxed trait object:
-        ```rust
-        let mut executor: Box<dyn OrderExecution> = if settings.simulation.enabled {
-            Box::new(PaperSimulator::new(settings.simulation.clone()))
-        } else {
-            Box::new(HyperliquidLiveExecutor::new(settings.venues.exchange_b.clone()))
-        };
-        ```
-    *   Ensure the `fill_tx` channel is passed into the `executor` so live fills map cleanly back to the OMS.
+### 3. Missing `reduce_only` Safeties
+*   **Problem**: `OrderRequest` lacked a `reduce_only` flag. Resting TP limits survived position closures, creating "orphaned" orders that could force the bot into reverse positions.
+*   **Solution**: Added `reduce_only` to the core `OrderRequest` struct. All TP and Time-Exit orders are strictly flagged as `true`. Hyperliquid's matching engine now automatically purges these orders the moment a position is flattened.
 
-### Step 2: Hyperliquid Authentication (EIP-712)
-1.  **Objective**: Securely generate signatures for Hyperliquid L1 transactions.
-2.  **Actions**:
-    *   Hyperliquid uses L1 Ethereum structured signing (EIP-712).
-    *   Implement an `ethers-core` (or `alloy-core`) wallet wrapper inside `hyperliquid_exec.rs` to parse the `api_secret` (private key).
-    *   Construct the precise JSON payload standard required by Hyperliquid (`coin`, `is_buy`, `sz`, `limit_px`, `order_type`, `reduce_only`, etc.).
-    *   *Critical Path*: Since we only submit Post-Only Limits (our current strategy parameter), we MUST tag the orders with `postOnly` true.
-
-### Step 3: Non-Blocking Submission `submit_order()`
-1.  **Objective**: Implement the `submit_order` trait without blocking the main event loop.
-2.  **Actions**:
-    *   Inside the trait implementation, we take the `OrderRequest` and construct the signed payload.
-    *   Use `tokio::spawn` to wrap the `reqwest` POST call to `https://api.hyperliquid.xyz/exchange`.
-    *   The trait returns `Ok(OrderAck { status: Pending })` instantaneously. 
-    *   *Fallbacks*: If the POST fails or receives a reject (e.g., Post-Only crossed the spread natively), we push a synthetic `RejectEvent` into the `fill_tx` channel to clear the OMS pending state.
-
-### Step 4: The Live Fill Feed (Websocket)
-1.  **Objective**: Replace synthetic simulator fills with real matching engine feedback.
-2.  **Actions**:
-    *   In `hyperliquid.rs`, extend the WebSocket component to subscribe to the `user` channel (requires authentication handshake).
-    *   When the WS parses a `user` trade or `fills` array, it pipes the exact price and size to the `fill_tx` crossbeam channel.
-    *   The OMS processes this native `FillEvent` accurately, updating the cumulative risk caps ($100 per symbol) in real-time.
-
-### Step 5: Graceful Tear-down & TP Orphan Management
-1.  **Objective**: Ensure pending limit orders that miss the Alpha Decay window are aborted, and prevent "naked" Take-Profit limits from reversing positions.
-2.  **Actions**:
-    *   **Reduce-Only Safeguard**: The automated TP Limit generated by the OMS must be strictly flagged as `reduce_only = true`. If the Time-Based Market Exit flattens the position, Hyperliquid's matching engine will safely and automatically cancel the resting TP limit.
-    *   **Explicit Cancellation**: Implement `cancel_order(order_id)`. The OMS must map `(Venue, Symbol)` to the exchange-provided `order_id` of the TP limit so it can actively issue a cancel request via POST alongside the Market Exit to guarantee no orphaned limits survive.
-    *   Ensure the bot issues a "Cancel All" signal on a SIGTERM shutdown.
-
-### Step 6: Boot-time State Synchronization & Partial Fills
-1.  **Objective**: Ensure the OMS doesn't desync from real-world inventory.
-2.  **Actions**:
-    *   **Position Boot Sync**: On startup, execute a REST `/info` (`clearinghouseState`) query to fetch current open positions. Prime the `cumulative_size` HashMaps inside the OMS with this real data rather than blindly defaulting to `0.0`.
-    *   **Partial Fills Tracker**: Live exchanges frequently fill limits partially. The `FillEvent` processor must accumulate native partial quantities from the WS Stream instead of assuming 100% execution, ensuring `cumulative_size` never deviates.
-
+### 4. Dynamic Exposure Calculation (The "Memory Leak" Fix)
+*   **Problem**: Brittle `HashMap` trackers (`cumulative_size`, etc.) could desync from the exchange if an order was rejected or a fill was dropped.
+*   **Solution**: Ripped out static trackers. The OMS now calculates exposure **dynamically** in every check:
+    `Exposure = net_delta.position (FILLED) + pending_orders.sum (INTENT)`.
+*   **Internal Ripple**: `check_time_exits()` now iterates directly over `net_delta.positions()`, using the native physical fill timestamp for precise timing.
 
 ---
 
-## 🛡️ Pre-Flight Verification & Risk
-Before deploying this newly built module on the VPS:
-1.  **Dry-run limits**: The `max_notional_usd` is capped at $20. We will enforce a secondary hard-check inside `HyperliquidLiveExecutor` that halts execution if it attempts to size a trade larger than 0.05 ETH equivalence.
-2.  **Post-Only Strictness**: We will configure the API wrapper to strictly enforce `reduce_only = false` and `post_only = true` to preserve Maker status and evade Taker fee drag.
-3.  **API Key Safety**: Keys will be stored exclusively as `.env` variables mapped into `settings.toml`. No hardcoding.
+## 📋 Operational Workflow
 
-*Ready for implementation. Awaiting your GO sequence to begin writing `src/eal/hyperliquid_exec.rs`.*
+### 1. Initialization
+1.  Loads `HL_API_KEY` and `HL_API_SECRET` from environment.
+2.  Fetches Global Meta State (Authoritative Symbol Mappings).
+3.  Syncs Clearinghouse State (Initial Positions).
+
+### 2. Entry Path (Maker-First)
+1.  **Signal**: Signal Pipeline detects Lead-Lag impulse.
+2.  **Order**: OMS generates a `Post-Only` Limit Order at mid-price.
+3.  **Submission**: Detached async task signs EIP-712 payload and POSTs to exchange.
+4.  **Pending**: Order resides in `pending_orders` map, consuming risk cap.
+
+### 3. Fill & TP Path
+1.  **Event**: WS User Stream pushes `FillEvent`.
+2.  **Update**: `net_delta` updates physical position; `pending_orders` decays by filled amount.
+3.  **TP**: OMS immediately triggers a `reduce_only` TP Limit at +13 bps.
+
+### 4. Exit Path (Emergency/Time)
+1.  **Trigger**: `check_time_exits()` detects a position held beyond `exit_timeout_ms`.
+2.  **Order**: OMS generates a `reduce_only` IOC Market order.
+3.  **Cleanup**: Resting TP orders are automatically invalidated by the exchange's `reduce_only` engine.
+
+---
+
+## 🛡️ Risk Controls
+1.  **Hardware Firewall**: Hardcoded `50.0 USD` max notional limit in `hyperliquid_exec.rs` (independent of config).
+2.  **Post-Only Enforcement**: Rejects entry orders that would require taking liquidity.
+3.  **Dynamic Sync**: State is recalculated from physical fills to prevent "Stuck Bot" memory leaks.
+
+*Status: **LIVE READY**. v0.2.0 deployed and rsynced to AWS.*

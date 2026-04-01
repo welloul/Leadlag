@@ -4,13 +4,13 @@
 
 | Aspect | Status |
 |--------|--------|
-| **Phase** | Passive Market Making (v0.2.0) |
-| **Stability** | All tests passing (limit matching verified) |
-| **Live Trading** | Disabled (simulation only) |
-| **API Keys** | Not required (market data is public) |
+| **Phase** | Live Execution Readiness (v0.2.0) |
+| **Stability** | All tests passing (v0.2.0 fixes verified) |
+| **Live Trading** | Enabled (Hyperliquid Live Executor) |
+| **API Keys** | HL_API_KEY / HL_API_SECRET required |
 | **Active Strategy** | Impulse-OBI (Maker Mode + Alpha Decay Probes) |
 | **Edge Window** | ~500ms Average Tokyo Decay |
-| **Deployment** | AWS EC2 (13.231.81.63, Amazon Linux 2023, ap-northeast-1) |
+| **Deployment** | AWS EC2 (13.231.81.63, ap-northeast-1) |
 
 ## Context for Next AI
 
@@ -23,7 +23,8 @@
 6. **Per-venue simulator keying** — Matchers keyed by `(Symbol, VenueId)`. Each venue has independent order books.
 7. **Local timestamps for freshness** — Use `SystemTime::now()` for freshness gating. Exchange timestamps are unreliable across venues (different clocks, drift).
 8. **Side-aware cooldown** — Cooldown keyed by `(symbol, side)`, not just `symbol`. Allows valid reversals.
-9. **$100 position cap** — Cumulative position notional per (venue, symbol) capped at $100. Direction-aware: can reduce but not add beyond cap.
+9. **$100 position cap (DYNAMIC)** — Calculated as `Filled + Pending`. Do not revert to static HashMaps; the current system is immune to state desync leaks.
+10. **Reduce-Only on Exits** — All TP and Time-Exits MUST use `reduce_only: true` to prevent orphaned orders from reversing positions.
 
 ### KNOWN HACKS
 1. `PreflightChecker::check_max_slippage` uses a size-impact model — approximate but sufficient.
@@ -31,7 +32,7 @@
 3. **Impulse sanity check** — Deltas > 500 bps are rejected as initialization artifacts.
 4. **Conservative fill** — Only fills 50% of best level size. Real books shift during latency.
 5. **Binance diff stream gap recovery** — When `prev_final_update_id != last_update_id`, the book is marked unsynced but doesn't re-fetch the REST snapshot. Needs a re-sync mechanism.
-6. **`other_is_lagging` tuned** — Checks `current_delta() < lag_threshold_bps` (1.0 bps). Prevents trading when other venue is moving significantly.
+6. **Boot-Time Sync** — The executor MUST call `load_asset_context()` before trading starts. If the API returns a null meta state, trading must halt.
 
 ### RECENT FIXES (v0.2.0 — Passive Market Making & Alpha Decay)
 1. **Passive Limit Lifecycle** — Bot now places `Post-Only` limit orders at mid-price instead of crossing the spread. Fees reduced to Maker tier (-1bp to 2bp rebate).
@@ -41,6 +42,10 @@
 5. **Take-Profit (TP) Expansion** — Global target increased to 13.0 bps for high-conviction maker entries.
 6. **Limit-Matching Simulator** — Rebuilt `PaperSimulator` with async fill broadcasting and pending-order matching logic.
 7. **OMS Pending Trackers** — Track positions by fill-time instead of submission-time to prevent exposure bloat during latency spikes.
+8. **Dynamic Exposure Loop** — Ripped out brittle static maps (`cumulative_size`). OMS now recalculates exposure from `NetDelta` + `PendingOrders` on every signal.
+9. **Boot-Time Meta Sync** — Executor fetches live asset indexes from Hyperliquid `/info` on startup. 
+10. **Precise TP Sizing** — TP orders are now sized 1:1 against `fill.filled_size`, eliminating "Double TP" over-exposure.
+11. **Reduce-Only Tunneling** — `OrderRequest` now maps the `reduce_only` flag directly to the Hyperliquid EIP-712 payload.
 
 ### RECENT FIXES (v0.1.5 — Signal Quality and Position Management Enhancements)
 1. **Freshness gate 400ms** — Both venues must have received a tick within 400ms (local time). Prevents trading against stale data.

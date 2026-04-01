@@ -12,9 +12,10 @@ Validate trade signals against risk limits, manage a passive market-making lifec
 4. **Self-trade prevention**: Cannot submit opposite side to same venue/symbol
 5. **Error propagation**: Execution errors wrapped in `RiskError::ExecutionFailed`
 6. **Side-aware cooldown**: `(symbol, side)` key, 200ms between trades. Allows reversals.
-7. **Position cap**: $100 cumulative notional per `(venue, symbol)`. Direction-aware: can reduce but not add beyond cap.
+7. **Position cap (Dynamic)**: $100 cumulative notional per `(venue, symbol)`. Calculated dynamically as `Filled + Pending`.
 8. **Maker Priority**: Entries MUST be `Post-Only`. Rejects if matching engine would cross the spread.
-9. **TP Coupling**: Every entry fill MUST trigger a secondary Take-Profit limit order at +13 bps.
+9. **TP Coupling (Partial fill aware)**: Every entry fill MUST trigger a secondary Take-Profit limit order sized exactly to `fill.filled_size`.
+10. **Reduce-Only Enforcement**: All TP and Time-Exit orders are flagged as `reduce_only` to prevent accidental position reversal.
 
 ## Order Flow (v0.2.0 — Maker Mode)
 
@@ -29,31 +30,35 @@ TradeSignal ──▶ process_signal()
 
 fill_rx ──────▶ process_fill()
                 │
-                ├─ [1] Resolve 'pending_orders'
-                ├─ [2] Update net position & 'position_open_ts'
+                ├─ [1] Update pending order (decrement `size` by `filled_size`)
+                ├─ [2] Update net position in `net_delta`
                 └─ [3] GENERATE AUTOMATED TP:
-                       Submit Limit Order at entry + 13.0 bps
+                       Submit 'reduce_only' Limit Order sized to `fill.filled_size`
 
 Tick/Book ────▶ check_time_exits()
                 │
-                ├─ [1] Lookup symbol_timeouts[symbol] or default
-                ├─ [2] Calculate position age (now - position_open_ts)
-                └─ [3] IF age > timeout: Submit IOC Market-Exit
+                ├─ [1] Iterate over `net_delta.positions()`
+                ├─ [2] Lookup symbol_timeouts[symbol] or default
+                ├─ [3] Calculate position age (now - pos.timestamp_ns)
+                └─ [4] IF age > timeout: Submit 'reduce_only' IOC Exit Order
 ```
 
-## Position Cap Logic
+## Position Cap & Exposure Calculation
+The OMS has moved away from brittle static state maps to **Dynamic Exposure Calculation**.
 
 ```rust
-// At $100 cap:
-if current_notional >= 100.0 {
-    // Only allow if this trade REDUCES the position
-    let would_reduce = (current_size > 0.0 && side == Sell)
-        || (current_size < 0.0 && side == Buy);
-    if !would_reduce {
-        return Err("Position cap: ...");
-    }
-}
+// Calculation logic used in process_signal:
+let filled_size = net_delta.position_size(venue, symbol);
+let pending_size = pending_orders.values()
+    .filter(|o| o.symbol == symbol && o.venue == venue)
+    .map(|o| if o.side == Buy { o.size } else { -o.size })
+    .sum();
+
+let current_size = filled_size + pending_size;
+let current_notional = current_size.abs() * current_price;
 ```
+
+This prevents memory leaks where a missed fill or rejected order would permanently lock the position cap.
 
 ## Key Functions
 
@@ -87,10 +92,9 @@ OrderManagementSystem:
 │ net_delta: NetDelta                                      │
 │ preflight: PreflightChecker                              │
 │ pending_orders: HashMap<String, OrderRequest>            │
-│ last_trade_per_symbol: HashMap<(String, Side), u64>      │ ← Side-aware cooldown
-│ cumulative_notional: HashMap<(String, String), f64>      │ ← Position cap
-│ cumulative_size: HashMap<(String, String), f64>          │ ← Direction tracking
+│ last_trade_per_symbol: HashMap<(String, Side), u64>      │
 └──────────────────────────────────────────────────────────┘
+Note: `cumulative_notional`, `cumulative_size`, and `position_open_ts` were removed in v0.2.0 to eliminate state desync bugs.
 ```
 
 ## RiskError Variants

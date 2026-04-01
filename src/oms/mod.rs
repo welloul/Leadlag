@@ -536,7 +536,7 @@ impl OrderManagementSystem {
             venue: signal.target_venue,
             symbol: signal.symbol.clone(),
             side: signal.side,
-            order_type: crate::eal::OrderType::IOC,
+            order_type: crate::eal::OrderType::Market,
             size: exit_size,
             price: None,
             post_only: false,
