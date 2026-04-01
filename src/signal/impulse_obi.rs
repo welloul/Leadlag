@@ -77,7 +77,7 @@ pub struct ImpulseObiEngine {
     /// OBI divergence detector
     obi_detector: ObiDivergenceDetector,
     /// Minimum cross-venue edge in bps (fees-aware: must cover taker fees + slippage)
-    entry_threshold_bps: f64,
+    pub(crate) entry_threshold_bps: f64,
     /// Pending impulse signal (waiting for OBI confirmation)
     /// Uses wall-clock stored_at_ns for expiry.
     pending_impulse: Option<PendingSignal>,
@@ -132,7 +132,7 @@ impl ImpulseObiEngine {
 
     /// Check cross-venue edge before emitting signal.
     /// Returns true if edge >= entry_threshold_bps.
-    fn has_edge(&self, signal_venue: VenueId, target_venue: VenueId, side: OrderSide) -> bool {
+    pub(crate) fn has_edge(&self, signal_venue: VenueId, target_venue: VenueId, side: OrderSide) -> bool {
         let source_mid = self.impulse_detector.current_mid(signal_venue);
         let target_mid = self.impulse_detector.current_mid(target_venue);
         if let (Some(src), Some(tgt)) = (source_mid, target_mid) {

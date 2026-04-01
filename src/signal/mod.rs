@@ -205,17 +205,33 @@ impl<const N: usize> SignalPipeline<N> {
     /// Routes to the engine for the book's symbol — fully isolated per symbol.
     pub fn process_book_for_impulse(&mut self, book: &BookUpdate) -> Option<TradeSignal> {
         if let Some(engine) = self.impulse_obi_engines.get_mut(&book.symbol) {
-            if let Some(signal) = engine.impulse_detector.process_book(book) {
-                let strength = (signal.impulse_magnitude_bps.abs()
+            if let Some(impulse) = engine.impulse_detector.process_book(book) {
+                // Cross-venue edge check: ensure the target is actually lagging 
+                // by at least entry_threshold_bps before we fire.
+                // NOTE: We assume the trigger venue is the book's venue.
+                let signal_venue = book.venue;
+                let target_venue = impulse.target_venue;
+                if !engine.has_edge(signal_venue, target_venue, impulse.side) {
+                    tracing::debug!(
+                        "Book-mid impulse rejected: edge < {} bps for {} {} on {:?}",
+                        engine.entry_threshold_bps,
+                        impulse.side,
+                        impulse.symbol,
+                        target_venue
+                    );
+                    return None;
+                }
+
+                let strength = (impulse.impulse_magnitude_bps.abs()
                     / self.settings.impulse_threshold_bps as f64)
                     .clamp(0.5, 2.0);
                 return Some(TradeSignal {
-                    side: signal.side,
-                    target_venue: signal.target_venue,
-                    symbol: signal.symbol,
+                    side: impulse.side,
+                    target_venue: impulse.target_venue,
+                    symbol: impulse.symbol,
                     correlation_r: strength,
                     lag_offset_ns: 0,
-                    timestamp_ns: signal.timestamp_ns,
+                    timestamp_ns: impulse.timestamp_ns,
                     price: None,
                 });
             }
