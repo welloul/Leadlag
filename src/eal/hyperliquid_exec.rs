@@ -14,6 +14,14 @@ use crate::eal::{
     Position, VenueId,
 };
 
+use hyperliquid::{Exchange, Hyperliquid};
+use hyperliquid::types::{
+    Chain,
+    exchange::request::{OrderRequest as HLOrderRequest, OrderType as HLOrderType, Limit, Tif},
+};
+use ethers_signers::LocalWallet;
+use std::str::FromStr;
+
 const HYPERLIQUID_EXCHANGE_URL: &str = "https://api.hyperliquid.xyz/exchange";
 const HYPERLIQUID_INFO_URL: &str = "https://api.hyperliquid.xyz/info";
 
@@ -239,20 +247,23 @@ impl HyperliquidLiveExecutor {
                 }
             };
             
-            let action = serde_json::json!({
-                "type": "order",
-                "orders": [{
-                    "a": asset_index,
-                    "b": is_buy,
-                    "p": limit_price,
-                    "s": sz,
-                    "r": order.reduce_only,
-                    "t": tif_obj,
-                }],
-                "grouping": "na"
-            });
+            let hl_tif = if order.post_only {
+                Tif::Alo
+            } else {
+                Tif::Ioc
+            };
 
-            tracing::debug!("Generated Action Payload: {}", action);
+            let hl_order = HLOrderRequest {
+                asset: asset_index,
+                is_buy,
+                limit_px: limit_price,
+                sz,
+                reduce_only: order.reduce_only,
+                order_type: HLOrderType::Limit(Limit { tif: hl_tif }),
+                cloid: None,
+            };
+
+            tracing::debug!("Generated Action Payload: {:?}", hl_order);
 
             // ==========================================================
             // EIP-712 MESSAGEPACK PIPELINE
@@ -264,37 +275,25 @@ impl HyperliquidLiveExecutor {
             // 4. We sign it with our API wallet (`HL_API_SECRET`).
             // ==========================================================
             
-            // Use ethers_core libraries to derive the LocalWallet from the env secret
-            use std::str::FromStr;
-            let _wallet = match ethers_signers::LocalWallet::from_str(&wallet_secret) {
-                Ok(w) => w,
+            let wallet = match LocalWallet::from_str(&wallet_secret) {
+                Ok(w) => Arc::new(w),
                 Err(e) => {
                     tracing::error!("FATAL: Invalid private key format. L1 Signature failed! {}", e);
                     return;
                 }
             };
 
-            // INSTRUCTION: Because strict Canonical MsgPack sorting is incredibly complex to roll 
-            // manually in Rust without producing invalid signatures, the actual hashing step 
-            // abstracts slightly here. The resulting signed payload matches the format:
-            /*
-                let payload = serde_json::json!({
-                    "action": action,
-                    "nonce": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis(),
-                    "signature": {
-                        "r": "0xABC...",
-                        "s": "0xDEF...",
-                        "v": 27
-                    },
-                    "vaultAddress": null
-                });
-                
-                let res = client.post(HYPERLIQUID_EXCHANGE_URL).json(&payload).send().await;
-            */
+            let exchange = Exchange::new(Chain::Arbitrum);
             
-            // Mocking asynchronous flight latency pending full SDK inclusion
-            tokio::time::sleep(tokio::time::Duration::from_millis(15)).await;
-            tracing::info!("Mock Signature Validation Passed. Post-Only L1 payload built for order {}", order.client_order_id);
+            match exchange.place_order(wallet, vec![hl_order], None).await {
+                Ok(response) => {
+                    tracing::info!("Exchange API response: {:?}", response);
+                    tracing::info!("Post-Only L1 payload built and sent for order {}", order.client_order_id);
+                }
+                Err(e) => {
+                    tracing::error!("Failed to place order via Hyperliquid API: {}", e);
+                }
+            }
         });
     }
 
@@ -303,18 +302,23 @@ impl HyperliquidLiveExecutor {
         tracing::info!("Synchronizing account leverage to {}x for {} symbols...", leverage, symbols.len());
         
         let map = self.asset_ctx.read().await;
+        
+        let wallet = match LocalWallet::from_str(&self.wallet_secret) {
+            Ok(w) => Arc::new(w),
+            Err(e) => {
+                tracing::error!("FATAL: Invalid private key format. Leverage sync failed! {}", e);
+                return Err(ExecutionError::ExchangeError(format!("Invalid private key: {}", e)));
+            }
+        };
+
+        let exchange = Exchange::new(Chain::Arbitrum);
+
         for symbol in symbols {
             if let Some(&asset_index) = map.get(symbol) {
-                // Construct the updateLeverage action
-                let _action = serde_json::json!({
-                    "type": "updateLeverage",
-                    "asset": asset_index,
-                    "isCross": true,
-                    "leverage": leverage
-                });
-                
-                // Note: Signing and actual REST submission is abstracted into the L1 pipeline
-                tracing::info!("SET LEVERAGE: {} (asset_index {}) -> {}x", symbol, asset_index, leverage);
+                match exchange.update_leverage(wallet.clone(), asset_index, leverage, true).await {
+                    Ok(resp) => tracing::info!("SET LEVERAGE SUCCESS: {} (asset_index {}) -> {}x {:?}", symbol, asset_index, leverage, resp),
+                    Err(e) => tracing::error!("FAILED TO SET LEVERAGE for {}: {}", symbol, e),
+                }
                 
                 // Anti-flood throttle
                 tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
