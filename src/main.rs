@@ -640,6 +640,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
             // Time-based exit: close positions older than exit_timeout_ms
             let exit_signals = oms.check_time_exits();
+            oms.check_pending_ttl(executor).await;
             for exit_signal in exit_signals {
                 let exec_price = simulator.get_mid_price(&exit_signal.symbol, exit_signal.target_venue)
                     .unwrap_or(0.0);
@@ -674,8 +675,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         }
 
-        // Process asynchronous fills from PaperSimulator (LIMIT ORDERS)
-        if let Ok(fill) = fill_rx.try_recv() {
+        // Process asynchronous fills (LIMIT ORDERS)
+        while let Ok(fill) = fill_rx.try_recv() {
             if let Some(tp_order) = oms.process_fill(&fill) {
                 let tp_price = tp_order.price.unwrap_or(0.0);
                 info!("ENTRY FILLED: Submitting TP Limit for {} {} @ {:.4}", 

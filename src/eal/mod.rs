@@ -59,6 +59,12 @@ pub trait OrderExecution: Send + Sync {
     /// Cancel an existing order.
     async fn cancel_order(&self, order_id: OrderId) -> Result<(), ExecutionError>;
 
+    /// Cancel an existing order by its client order ID.
+    async fn cancel_order_by_cloid(&self, symbol: &Symbol, cloid: &str) -> Result<(), ExecutionError> {
+        // Default implementation for exchanges that don't support cloid cancellation
+        Err(ExecutionError::ExchangeError("Cloid cancellation not supported on this venue".to_string()))
+    }
+
     /// Get current positions.
     async fn get_positions(&self) -> Result<Vec<Position>, ExecutionError>;
 

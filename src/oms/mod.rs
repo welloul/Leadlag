@@ -218,7 +218,7 @@ pub struct OrderManagementSystem {
     strategy_settings: StrategySettings,
     net_delta: NetDelta,
     preflight: PreflightChecker,
-    pending_orders: HashMap<String, OrderRequest>,
+    pending_orders: HashMap<String, (OrderRequest, u64)>,
     /// Side-aware cooldown: last trade timestamp per (symbol, side)
     last_trade_per_symbol: HashMap<(String, OrderSide), u64>,
 }
@@ -273,7 +273,7 @@ impl OrderManagementSystem {
         // Exposure and Pending Check: don't double-dip on the same symbol before fill
         let sig_sym = signal.symbol.normalize();
         let pending_count = self.pending_orders.values()
-            .filter(|o| o.symbol.normalize() == sig_sym)
+            .filter(|(o, _)| o.symbol.normalize() == sig_sym)
             .count();
             
         if pending_count > 0 {
@@ -291,7 +291,7 @@ impl OrderManagementSystem {
         let mut current_notional = self.net_delta.position_notional(signal.target_venue, &signal.symbol);
         
         let sig_sym_norm = signal.symbol.normalize();
-        for pending in self.pending_orders.values() {
+        for (pending, _) in self.pending_orders.values() {
             if pending.symbol.normalize() == sig_sym_norm && pending.venue == signal.target_venue {
                 let pending_signed = match pending.side {
                     OrderSide::Buy => pending.size,
@@ -361,7 +361,7 @@ impl OrderManagementSystem {
                 price: None,
                 post_only: false,
                 reduce_only: false,
-                client_order_id: uuid::Uuid::new_v4().to_string(),
+                client_order_id: format!("0x{:032x}", uuid::Uuid::new_v4().as_u128()),
             }
         };
 
@@ -370,7 +370,7 @@ impl OrderManagementSystem {
 
         // Store pending order
         self.pending_orders
-            .insert(order.client_order_id.clone(), order.clone());
+            .insert(order.client_order_id.clone(), (order.clone(), now));
 
         // Submit order
         match executor.submit_order(&order).await {
@@ -396,7 +396,7 @@ impl OrderManagementSystem {
         let _cap_key = (venue_key.clone(), sym_key.clone());
 
         // Handle pending order decay for partial fills (Internal Ripple Effect B)
-        if let Some(pending) = self.pending_orders.get_mut(&fill.client_order_id) {
+        if let Some((pending, _)) = self.pending_orders.get_mut(&fill.client_order_id) {
             pending.size -= fill.filled_size;
             if pending.size <= 0.000001 {
                 self.pending_orders.remove(&fill.client_order_id);
@@ -541,7 +541,7 @@ impl OrderManagementSystem {
             price: None,
             post_only: false,
             reduce_only: true,
-            client_order_id: uuid::Uuid::new_v4().to_string(),
+            client_order_id: format!("0x{:032x}", uuid::Uuid::new_v4().as_u128()),
         };
 
         match executor.submit_order(&order).await {
@@ -550,6 +550,30 @@ impl OrderManagementSystem {
                 Ok(ack)
             }
             Err(e) => Err(RiskError::ExecutionFailed(e.to_string())),
+        }
+    }
+
+    /// Check for stale pending orders and trigger cancellation.
+    pub async fn check_pending_ttl(&mut self, executor: &dyn OrderExecution) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64;
+        // TTL from strategy settings (signal_timeout_ms)
+        let ttl_ns = self.strategy_settings.signal_timeout_ms * 1_000_000;
+
+        let mut to_cancel = Vec::new();
+
+        for (id, (order, sent_at)) in &self.pending_orders {
+            if now > *sent_at && (now - *sent_at) > ttl_ns {
+                to_cancel.push((id.clone(), order.symbol.clone()));
+            }
+        }
+
+        for (cloid, symbol) in to_cancel {
+            tracing::info!("TTL EXPIRED: Canceling stale pending order {} for {}", cloid, symbol.0);
+            let _ = executor.cancel_order_by_cloid(&symbol, &cloid).await;
+            self.pending_orders.remove(&cloid);
         }
     }
 }

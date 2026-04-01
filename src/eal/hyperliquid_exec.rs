@@ -97,7 +97,7 @@ impl HyperliquidLiveExecutor {
         let mut guard = self.fill_tx.lock().await;
         *guard = Some(tx.clone());
 
-        let wallet_address = self.wallet_address.clone();
+        let main_address = self.main_address.clone();
         
         // Spawn the dedicated User stream websocket connection
         tokio::spawn(async move {
@@ -117,7 +117,7 @@ impl HyperliquidLiveExecutor {
                         "method": "subscribe",
                         "subscription": {
                             "type": "userEvents",
-                            "user": wallet_address
+                            "user": main_address
                         }
                     });
 
@@ -143,9 +143,11 @@ impl HyperliquidLiveExecutor {
                                         let fee = fill.get("fee").and_then(|f| f.as_str()).and_then(|f| f.parse::<f64>().ok()).unwrap_or(0.0);
                                         let oid = fill.get("oid").and_then(|o| o.as_u64()).unwrap_or(0);
 
+                                        let cloid = fill.get("cloid").and_then(|c| c.as_str()).unwrap_or("UNKNOWN").to_string();
+                                        
                                         let fill_event = FillEvent {
                                             order_id: OrderId(oid),
-                                            client_order_id: format!("{}-{}", coin, oid), // Best effort mapping
+                                            client_order_id: cloid, // True mapping back to OMS
                                             venue: VenueId::EXCHANGE_B,
                                             symbol: crate::eal::Symbol::new(coin),
                                             side: if is_buy { crate::eal::OrderSide::Buy } else { crate::eal::OrderSide::Sell },
@@ -265,7 +267,7 @@ impl HyperliquidLiveExecutor {
                 sz,
                 reduce_only: order.reduce_only,
                 order_type: HLOrderType::Limit(Limit { tif: hl_tif }),
-                cloid: None,
+                cloid: uuid::Uuid::from_str(&order.client_order_id.replace("0x", "")).ok(),
             };
 
             tracing::debug!("Generated Action Payload: {:?}", hl_order);
@@ -366,15 +368,54 @@ impl OrderExecution for HyperliquidLiveExecutor {
     }
 
     /// Cancellation request mechanism
-    async fn cancel_order(&self, order_id: OrderId) -> Result<(), ExecutionError> {
-        tracing::info!("Triggering Async TP Cancellation for Order: {}", order_id);
+    async fn cancel_order(&self, _order_id: OrderId) -> Result<(), ExecutionError> {
+        Ok(())
+    }
+
+    /// Cancellation request mechanism
+    async fn cancel_order_by_cloid(&self, symbol: &Symbol, cloid: &str) -> Result<(), ExecutionError> {
+        tracing::info!("HL CANCEL by CLOID: {} for {}", cloid, symbol.0);
         
-        let client = self.client.clone();
+        let wallet_secret = self.wallet_secret.clone();
+        let main_address = self.main_address.clone();
+        let wallet_address = self.wallet_address.clone();
+        let asset_ctx_arc = self.asset_ctx.clone();
+        let symbol_str = symbol.0.clone();
+        let cloid_str = cloid.to_string();
+
         tokio::spawn(async move {
-            // let payload = construct_cancel_payload(order_id);
-            // client.post(...).json(...)...
+            let map = asset_ctx_arc.read().await;
+            let asset_index = match map.get(&symbol_str) {
+                Some(&idx) => idx,
+                None => return,
+            };
+
+            let cloid_uuid = match uuid::Uuid::from_str(&cloid_str.replace("0x", "")) {
+                Ok(u) => u,
+                Err(_) => return,
+            };
+
+            let wallet = match LocalWallet::from_str(&wallet_secret) {
+                Ok(w) => Arc::new(w),
+                Err(_) => return,
+            };
+
+            let exchange = Exchange::new(Chain::Arbitrum);
+            let vault_address = if main_address != wallet_address {
+                Some(ethers_core::types::Address::from_str(&main_address).unwrap_or_default())
+            } else {
+                None
+            };
+            
+            use hyperliquid::types::exchange::request::CancelByCloidRequest;
+            let cancel_req = CancelByCloidRequest { asset: asset_index, cloid: cloid_uuid };
+
+            match exchange.cancel_order_by_cloid(wallet, vec![cancel_req], vault_address).await {
+                Ok(resp) => tracing::info!("HL CANCEL SUCCESS for {}: {:?}", symbol_str, resp),
+                Err(e) => tracing::error!("HL CANCEL FAILED for {}: {}", symbol_str, e),
+            }
         });
-        
+
         Ok(())
     }
 
