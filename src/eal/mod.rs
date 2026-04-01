@@ -5,11 +5,13 @@
 
 mod binance;
 mod hyperliquid;
+mod hyperliquid_exec;
 mod mock;
 mod types;
 
 pub use binance::BinanceExchange;
 pub use hyperliquid::HyperliquidExchange;
+pub use hyperliquid_exec::HyperliquidLiveExecutor;
 pub use mock::MockExchange;
 pub use types::*;
 

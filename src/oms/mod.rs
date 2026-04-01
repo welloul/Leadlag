@@ -221,13 +221,6 @@ pub struct OrderManagementSystem {
     pending_orders: HashMap<String, OrderRequest>,
     /// Side-aware cooldown: last trade timestamp per (symbol, side)
     last_trade_per_symbol: HashMap<(String, OrderSide), u64>,
-    /// Cumulative position notional per (venue, symbol) — tracked at order time
-    /// This is used for position cap BEFORE fills arrive
-    cumulative_notional: HashMap<(String, String), f64>,  // (venue_str, symbol) → notional
-    /// Signed position size per (venue, symbol) for direction-aware checks
-    cumulative_size: HashMap<(String, String), f64>,
-    /// Position open timestamps per (venue, symbol) for time-based exit
-    position_open_ts: HashMap<(String, String), u64>,
 }
 
 impl OrderManagementSystem {
@@ -242,9 +235,6 @@ impl OrderManagementSystem {
             preflight,
             pending_orders: HashMap::new(),
             last_trade_per_symbol: HashMap::new(),
-            cumulative_notional: HashMap::new(),
-            cumulative_size: HashMap::new(),
-            position_open_ts: HashMap::new(),
         }
     }
 
@@ -296,12 +286,22 @@ impl OrderManagementSystem {
         // Position cap: $100 max notional per (venue, symbol), direction-aware.
         // Check per-symbol exposure limits
         let max_position_notional = self.risk_settings.max_position_usd;
-        let venue_key = format!("{:?}", signal.target_venue);
-        let sym_key = signal.symbol.0.clone();
-        let cap_key = (venue_key, sym_key);
-
-        let current_notional = *self.cumulative_notional.get(&cap_key).unwrap_or(&0.0);
-        let current_size = *self.cumulative_size.get(&cap_key).unwrap_or(&0.0);
+        
+        let mut current_size = self.net_delta.position_size(signal.target_venue, &signal.symbol);
+        let mut current_notional = self.net_delta.position_notional(signal.target_venue, &signal.symbol);
+        
+        let sig_sym_norm = signal.symbol.normalize();
+        for pending in self.pending_orders.values() {
+            if pending.symbol.normalize() == sig_sym_norm && pending.venue == signal.target_venue {
+                let pending_signed = match pending.side {
+                    OrderSide::Buy => pending.size,
+                    OrderSide::Sell => -pending.size,
+                };
+                current_size += pending_signed;
+                current_notional += pending.size * current_price;
+            }
+        }
+        
         let trade_notional = self.risk_settings.max_notional_usd;
 
         if current_notional >= max_position_notional {
@@ -348,7 +348,8 @@ impl OrderManagementSystem {
                 signal.side,
                 size,
                 current_price,
-                true // post_only
+                true, // post_only
+                false // reduce_only
              )
         } else {
             OrderRequest {
@@ -359,6 +360,7 @@ impl OrderManagementSystem {
                 size,
                 price: None,
                 post_only: false,
+                reduce_only: false,
                 client_order_id: uuid::Uuid::new_v4().to_string(),
             }
         };
@@ -375,33 +377,6 @@ impl OrderManagementSystem {
             Ok(ack) => {
                 // Update side-aware cooldown
                 self.last_trade_per_symbol.insert(cooldown_key, now);
-
-                // Update cumulative position tracking
-                let signed_size = match signal.side {
-                    OrderSide::Buy => size,
-                    OrderSide::Sell => -size,
-                };
-                let prev_size = *self.cumulative_size.get(&cap_key).unwrap_or(&0.0);
-
-                // Direction-aware notional tracking
-                let would_reduce = (prev_size > 0.0 && signed_size < 0.0)
-                    || (prev_size < 0.0 && signed_size > 0.0);
-                if would_reduce {
-                    *self.cumulative_notional.entry(cap_key.clone()).or_insert(0.0) -= trade_notional;
-                } else {
-                    *self.cumulative_notional.entry(cap_key.clone()).or_insert(0.0) += trade_notional;
-                }
-                *self.cumulative_size.entry(cap_key.clone()).or_insert(0.0) += signed_size;
-                let new_size = *self.cumulative_size.get(&cap_key).unwrap_or(&0.0);
-
-                // Clean up when position fully closed
-                if new_size.abs() < 0.0001 {
-                    self.cumulative_notional.remove(&cap_key);
-                    self.cumulative_size.remove(&cap_key);
-                    self.position_open_ts.remove(&cap_key);
-                } else if prev_size == 0.0 {
-                    self.position_open_ts.insert(cap_key.clone(), now);
-                }
 
                 Ok(ack)
             }
@@ -420,21 +395,28 @@ impl OrderManagementSystem {
         let sym_key = fill.symbol.0.clone();
         let cap_key = (venue_key.clone(), sym_key.clone());
 
-        // Remove from pending orders
-        self.pending_orders.remove(&fill.client_order_id);
+        // Handle pending order decay for partial fills (Internal Ripple Effect B)
+        if let Some(pending) = self.pending_orders.get_mut(&fill.client_order_id) {
+            pending.size -= fill.filled_size;
+            if pending.size <= 0.000001 {
+                self.pending_orders.remove(&fill.client_order_id);
+            }
+        }
 
         // Update net delta
         self.net_delta.update_position(fill);
 
         // Store open timestamp for time-based exit (start the clock on FILL, not signal)
-        self.position_open_ts.insert(cap_key.clone(), fill.timestamp_ns);
-
-        // Only generate TP for Entry fills (where we now have a position)
-        let current_size = *self.cumulative_size.get(&cap_key).unwrap_or(&0.0);
+        // Handled directly by net_delta stamping `timestamp_ns`
+        
+        let current_size = self.net_delta.position_size(fill.venue, &fill.symbol);
+        
+        let is_entry = (current_size > 0.0 && fill.side == OrderSide::Buy)
+            || (current_size < 0.0 && fill.side == OrderSide::Sell);
         
         // If we filled a BUY, we want to SELL at entry + profit bps
         // If we filled a SELL, we want to BUY at entry - profit bps
-        if current_size.abs() > 0.0 && self.strategy_settings.active_strategy == "impulse_obi" {
+        if is_entry && self.strategy_settings.active_strategy == "impulse_obi" {
             let tp_bps = self.strategy_settings.take_profit_bps; 
             let tp_price = if current_size > 0.0 {
                 fill.avg_price * (1.0 + (tp_bps / 10000.0))
@@ -448,9 +430,10 @@ impl OrderManagementSystem {
                 fill.venue,
                 fill.symbol.clone(),
                 exit_side,
-                current_size.abs(),
+                fill.filled_size,
                 tp_price,
-                false // Closing order shouldn't be post-only to ensure we exit at the profit target
+                false, // Closing order shouldn't be post-only to ensure we exit at the profit target
+                true   // reduce_only
             );
             
             return Some(tp_order);
@@ -500,35 +483,31 @@ impl OrderManagementSystem {
 
         let mut exits = Vec::new();
 
-        for (cap_key, open_ts) in &self.position_open_ts {
-            let current_size = *self.cumulative_size.get(cap_key).unwrap_or(&0.0);
+        for pos in self.net_delta.positions() {
+            let current_size = pos.size;
             if current_size.abs() < 1e-6 { continue; }
             
             // Per-Symbol Timeout Lookup
             let timeout_ms = self.strategy_settings.symbol_timeouts
-                .get(&cap_key.1) // Symbol part of (Venue, Symbol) key
+                .get(&pos.symbol.0) // Symbol part of (Venue, Symbol) key
                 .copied()
                 .unwrap_or(self.strategy_settings.exit_timeout_ms);
                 
-            if now - *open_ts > (timeout_ms * 1_000_000) {
+            let open_ts = pos.timestamp_ns;
+            if now > open_ts && (now - open_ts) > (timeout_ms * 1_000_000) {
                 let exit_side = if current_size > 0.0 { OrderSide::Sell } else { OrderSide::Buy };
+                let venue = pos.venue;
 
-                let venue = if cap_key.0 == "VenueId(0)" {
-                    VenueId::EXCHANGE_A
-                } else {
-                    VenueId::EXCHANGE_B
-                };
-
-                let age_ms = (now.saturating_sub(*open_ts)) as f64 / 1_000_000.0;
+                let age_ms = (now.saturating_sub(open_ts)) as f64 / 1_000_000.0;
                 tracing::info!(
                     "TIME EXIT: {} on {:?} held for {:.0}ms (timeout={}ms)",
-                    cap_key.1, venue, age_ms, timeout_ms
+                    pos.symbol, venue, age_ms, timeout_ms
                 );
 
                 exits.push(TradeSignal {
                     side: exit_side,
                     target_venue: venue,
-                    symbol: Symbol::new(&cap_key.1),
+                    symbol: pos.symbol.clone(),
                     correlation_r: 0.0,
                     lag_offset_ns: 0,
                     timestamp_ns: now,
@@ -545,8 +524,7 @@ impl OrderManagementSystem {
         current_price: f64,
         executor: &dyn OrderExecution,
     ) -> Result<OrderAck, RiskError> {
-        let cap_key = (format!("{:?}", signal.target_venue), signal.symbol.0.clone());
-        let current_size = *self.cumulative_size.get(&cap_key).unwrap_or(&0.0);
+        let current_size = self.net_delta.position_size(signal.target_venue, &signal.symbol);
 
         if current_size == 0.0 {
             return Err(RiskError::ExecutionFailed("No position to exit".to_string()));
@@ -562,14 +540,13 @@ impl OrderManagementSystem {
             size: exit_size,
             price: None,
             post_only: false,
+            reduce_only: true,
             client_order_id: uuid::Uuid::new_v4().to_string(),
         };
 
         match executor.submit_order(&order).await {
             Ok(ack) => {
-                *self.cumulative_size.entry(cap_key.clone()).or_insert(0.0) = 0.0;
-                *self.cumulative_notional.entry(cap_key.clone()).or_insert(0.0) = 0.0;
-                self.position_open_ts.remove(&cap_key);
+                // Exposure recalculates natively when the fill arrives.
                 Ok(ack)
             }
             Err(e) => Err(RiskError::ExecutionFailed(e.to_string())),

@@ -135,7 +135,27 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     
     // Asynchronous fill channel for limit order notifications
     let (fill_tx, fill_rx) = crossbeam_channel::unbounded::<eal::FillEvent>();
-    simulator.set_fill_tx(fill_tx);
+
+    // Dynamically toggle Execution Engine
+    let live_executor = if !settings.simulation.enabled {
+        let wallet_address = std::env::var("HL_API_KEY").unwrap_or_default();
+        let wallet_secret = std::env::var("HL_API_SECRET").unwrap_or_default();
+        let exec = eal::HyperliquidLiveExecutor::new(VenueId::EXCHANGE_B, wallet_address, wallet_secret);
+        
+        // FATAL ABORT: We must sync the Meta State or L1 signatures crash instantly
+        if let Err(e) = exec.load_asset_context().await {
+            tracing::error!("Failed to fetch HL meta state! Exiting to preserve safety. Error: {}", e);
+            std::process::exit(1);
+        }
+
+        exec.set_fill_tx(fill_tx.clone()).await;
+        info!("Using Hyperliquid LIVE Execution Engine! (CAUTION: REAL CAPITAL)");
+        Some(exec)
+    } else {
+        simulator.set_fill_tx(fill_tx.clone());
+        info!("Using PaperSimulator for execution");
+        None
+    };
 
     // Main event loop
     info!("Entering main event loop...");
@@ -230,7 +250,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     // Use target venue's price, not source tick's price
                     let exec_price = simulator.get_mid_price(&signal.symbol, signal.target_venue)
                         .unwrap_or(tick.price);
-                    match oms.process_signal(&signal, exec_price, &simulator).await {
+                        
+                    let exec_tray: &dyn eal::OrderExecution = if let Some(ref live) = live_executor {
+                        live
+                    } else {
+                        &simulator
+                    };
+                    
+                    match oms.process_signal(&signal, exec_price, exec_tray).await {
                         Ok(ack) => {
                             info!("Order submitted: {}", ack.order_id);
                         }

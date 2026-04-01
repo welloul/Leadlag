@@ -35,7 +35,7 @@ max_rtt_ms = 100
 [strategy]
 active_strategy = "impulse_obi"
 
-symbols = ["ZEC", "DOGE", "SUI", "BCH", "PUMP", "ADA", "WIF", "ARB", "TON"]
+symbols = ["ZEC", "DOGE", "SUI", "SOL", "PUMP", "ADA", "WIF", "LINK", "XMR"]
 
 # Correlation-Hysteresis settings
 window_size_ticks = 256
@@ -71,10 +71,10 @@ take_profit_bps = 10.0
 [strategy.symbol_timeouts]
 default = 1500
 ADA = 1000
-BCH = 1000
+SOL = 1000
 ZEC = 1000
-TON = 2500
-ARB = 2500
+LINK = 1500
+XMR = 2500
 SUI = 2500
 PUMP = 1500
 WIF = 1500

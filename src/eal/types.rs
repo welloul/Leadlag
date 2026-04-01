@@ -229,6 +229,8 @@ pub struct OrderRequest {
     pub price: Option<f64>,
     /// Post-Only flag (ensure we are a maker).
     pub post_only: bool,
+    /// Reduce-only flag (ensure we only close positions).
+    pub reduce_only: bool,
     /// Client-generated order ID for idempotency.
     pub client_order_id: String,
 }
@@ -244,6 +246,7 @@ impl OrderRequest {
             size,
             price: None,
             post_only: false,
+            reduce_only: false,
             client_order_id: uuid::Uuid::new_v4().to_string(),
         }
     }
@@ -258,12 +261,13 @@ impl OrderRequest {
             size,
             price: None,
             post_only: false,
+            reduce_only: false,
             client_order_id: uuid::Uuid::new_v4().to_string(),
         }
     }
 
     /// Create a limit order.
-    pub fn limit(venue: VenueId, symbol: Symbol, side: OrderSide, size: f64, price: f64, post_only: bool) -> Self {
+    pub fn limit(venue: VenueId, symbol: Symbol, side: OrderSide, size: f64, price: f64, post_only: bool, reduce_only: bool) -> Self {
         Self {
             venue,
             symbol,
@@ -272,6 +276,7 @@ impl OrderRequest {
             size,
             price: Some(price),
             post_only,
+            reduce_only,
             client_order_id: uuid::Uuid::new_v4().to_string(),
         }
     }
