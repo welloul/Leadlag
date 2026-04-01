@@ -237,16 +237,8 @@ impl HyperliquidLiveExecutor {
             };
             
             // Format size properly depending on asset price tier
-            let sz = if raw_p > 100.0 {
-                format!("{:.4}", order.size)
-            } else if raw_p > 10.0 {
-                format!("{:.2}", order.size)
-            } else if raw_p > 1.0 {
-                format!("{:.1}", order.size)
-            } else {
-                format!("{:.0}", order.size)
-            };
-            let sz = sz.trim_end_matches('0').trim_end_matches('.').to_string();
+            // Size calculation deferred until asset metadata (szDecimals) is loaded below.
+
 
             let map = asset_ctx_arc.read().await;
             let (asset_index, sz_decimals) = match map.get(&order.symbol.0) {
@@ -262,6 +254,16 @@ impl HyperliquidLiveExecutor {
             let sz = sz.trim_end_matches('0').trim_end_matches('.').to_string();
             // Fallback for case where it rounds to empty string or "."
             let sz = if sz.is_empty() { "0".to_string() } else { sz };
+
+            let hl_tif = if order.post_only {
+                Tif::Alo  // Add-Liquidity-Only (post-only maker)
+            } else if order.order_type == crate::eal::OrderType::IOC {
+                Tif::Ioc  // Immediate-or-Cancel (aggressive taker / exits)
+            } else if order.reduce_only {
+                Tif::Gtc  // Good-Till-Cancelled (TP / resting limit exits)
+            } else {
+                Tif::Ioc  // Default fallback
+            };
 
             let hl_order = HLOrderRequest {
                 asset: asset_index,
