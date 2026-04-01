@@ -14,11 +14,13 @@ use crate::eal::{
     Position, Symbol, VenueId,
 };
 
-use hyperliquid::{Exchange, Hyperliquid};
 use hyperliquid::types::{
     Chain,
     exchange::request::{OrderRequest as HLOrderRequest, OrderType as HLOrderType, Limit, Tif},
+    Action, Request,
 };
+use ethers_core::types::Address;
+use hyperliquid::exchange::Exchange as SDKExchange;
 use ethers_signers::LocalWallet;
 use std::str::FromStr;
 
@@ -324,21 +326,76 @@ impl HyperliquidLiveExecutor {
             }
         };
 
-        let exchange = Exchange::new(Chain::Arbitrum);
+        let vault_address = if self.main_address != self.wallet_address {
+            Some(ethers_core::types::Address::from_str(&self.main_address).unwrap_or_default())
+        } else {
+            None
+        };
 
         for symbol in symbols {
             if let Some(&asset_index) = map.get(symbol) {
-                let vault_address = if self.main_address != self.wallet_address {
-                    Some(ethers_core::types::Address::from_str(&self.main_address).unwrap_or_default())
-                } else {
-                    None
+                // Manual EIP-712 Action because SDK 0.2.4 update_leverage is not vault-aware
+                let action = hyperliquid::types::exchange::request::Action::UpdateLeverage {
+                    asset: asset_index,
+                    is_cross: false, // Force Isolated as per requirement
+                    leverage,
                 };
 
-                match exchange.update_leverage(wallet.clone(), asset_index, leverage, false).await {
-                    Ok(resp) => tracing::info!("SET LEVERAGE SUCCESS: {} (asset_index {}) -> {}x Isolated {:?}", symbol, asset_index, leverage, resp),
+                let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64;
+                
+                // Construct the full signed request
+                match self.send_vault_action(wallet.clone(), action, vault_address, nonce).await {
+                    Ok(_) => tracing::info!("SET LEVERAGE SUCCESS: {} {}x Isolated for Vault {}", symbol, leverage, self.main_address),
                     Err(e) => tracing::error!("FAILED TO SET LEVERAGE for {}: {}", symbol, e),
                 }
+
+                // Anti-flood throttle
+                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
             }
+        }
+        
+        Ok(())
+    }
+
+    /// Helper to send any L1 action with vault_address support
+    async fn send_vault_action(&self, wallet: Arc<LocalWallet>, action: hyperliquid::types::exchange::request::Action, vault_address: Option<ethers_core::types::Address>, nonce: u64) -> Result<(), ExecutionError> {
+        use hyperliquid::types::exchange::request::Request;
+        
+        // This logic mirrors the internal SDK place_order but for arbitrary actions
+        let connection_id = action.connection_id(vault_address, nonce)
+            .map_err(|e| ExecutionError::ExchangeError(e))?;
+        
+        // Manual signing (SDK's sign_l1_action is private)
+        use ethers_signers::Signer;
+        let chain_id = 1337; // HL L1 pseudo-chain ID for EIP-712
+        
+        // Use the internal l1::Agent struct for correct EIP-712 hashing
+        use hyperliquid::types::l1;
+        let source = "a".to_string(); // Arbitrum Mainnet mapping
+        let payload = l1::Agent {
+            source,
+            connection_id,
+        };
+
+        let signature = wallet.sign_typed_data(&payload).await
+            .map_err(|e| ExecutionError::ExchangeError(e.to_string()))?;
+
+        let request = Request {
+            action,
+            nonce,
+            signature,
+            vault_address,
+        };
+
+        let res = self.client.post(HYPERLIQUID_EXCHANGE_URL)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| ExecutionError::ExchangeError(e.to_string()))?;
+
+        if !res.status().is_success() {
+            let body = res.text().await.unwrap_or_default();
+            return Err(ExecutionError::ExchangeError(format!("Action rejected ({}): {}", res.status(), body)));
         }
         
         Ok(())

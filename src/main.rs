@@ -149,16 +149,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }
 
-        // Apply account-wide leverage settings
-        if let Err(e) = exec.sync_leverage(&settings.strategy.symbols, settings.risk.leverage as u32).await {
-            tracing::warn!("Failed to synchronize leverage settings: {}", e);
-        }
-
-        // Nuclear Cleanup: Cancel all stale orders for traded symbols
+        // Nuclear Cleanup FIRST: Cancel all stale orders for traded symbols
+        // Leverage sync can fail if open orders exist.
         if let Err(e) = exec.cancel_all_open_orders(&settings.strategy.symbols).await {
             tracing::warn!("Failed to cleanup stale orders: {}", e);
         }
 
+        // Apply account-wide leverage settings
+        if let Err(e) = exec.sync_leverage(&settings.strategy.symbols, settings.risk.leverage as u32).await {
+            tracing::warn!("Failed to synchronize leverage settings: {}", e);
+        }
+        
         exec.set_fill_tx(fill_tx.clone()).await;
         info!("Using Hyperliquid LIVE Execution Engine! (CAUTION: REAL CAPITAL)");
         Some(exec)

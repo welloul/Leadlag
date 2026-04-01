@@ -380,11 +380,11 @@ impl OrderManagementSystem {
                 venue: signal.target_venue,
                 symbol: signal.symbol.clone(),
                 side: signal.side,
-                order_type: crate::eal::OrderType::IOC,
+                order_type: if signal.price.is_some() { crate::eal::OrderType::Limit } else { crate::eal::OrderType::IOC },
                 size,
-                price: None,
+                price: signal.price,
                 post_only: false,
-                reduce_only: false,
+                reduce_only: true, // Auto-reduce on non-impulse exits
                 client_order_id: format!("0x{:032x}", uuid::Uuid::new_v4().as_u128()),
             }
         };
@@ -555,16 +555,23 @@ impl OrderManagementSystem {
         }
 
         let exit_size = current_size.abs();
+        
+        // Aggressive Limit Exit: add 1% slippage to guarantee execution
+        let slip_bps = 50.0; // 50 bps slippage
+        let limit_price = match signal.side {
+            OrderSide::Buy => _current_price * (1.0 + slip_bps / 10000.0),
+            OrderSide::Sell => _current_price * (1.0 - slip_bps / 10000.0),
+        };
 
         let order = OrderRequest {
             venue: signal.target_venue,
             symbol: signal.symbol.clone(),
             side: signal.side,
-            order_type: crate::eal::OrderType::Market,
+            order_type: crate::eal::OrderType::IOC,
             size: exit_size,
-            price: None,
+            price: Some(limit_price),
             post_only: false,
-            reduce_only: true,
+            reduce_only: true, // Only reduce or close
             client_order_id: format!("0x{:032x}", uuid::Uuid::new_v4().as_u128()),
         };
 
