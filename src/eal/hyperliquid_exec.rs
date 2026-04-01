@@ -348,6 +348,7 @@ impl HyperliquidLiveExecutor {
     pub async fn cancel_all_open_orders(&self, _symbols: &[String]) -> Result<(), ExecutionError> {
         tracing::info!("Draining Hyperliquid L1 Order Book of stale orders...");
         
+        let map = self.asset_ctx.read().await;
         let payload = serde_json::json!({
             "type": "openOrders",
             "user": self.main_address
