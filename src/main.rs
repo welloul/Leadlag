@@ -148,6 +148,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             std::process::exit(1);
         }
 
+        // Apply account-wide leverage settings
+        if let Err(e) = exec.sync_leverage(&settings.strategy.symbols, settings.risk.leverage as u32).await {
+            tracing::warn!("Failed to synchronize leverage settings: {}", e);
+        }
+
         exec.set_fill_tx(fill_tx.clone()).await;
         info!("Using Hyperliquid LIVE Execution Engine! (CAUTION: REAL CAPITAL)");
         Some(exec)

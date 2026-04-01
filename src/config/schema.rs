@@ -253,8 +253,12 @@ pub struct RiskSettings {
     pub max_notional_usd: f64,
 
     /// Maximum net position notional in USD per symbol
-    #[validate(range(min = 10.0, max = 10_000_000.0))]
+    #[validate(range(min = 5.0, max = 10_000_000.0))]
     pub max_position_usd: f64,
+
+    /// Account Leverage (e.g., 5.0 = 5x)
+    #[validate(range(min = 1.0, max = 50.0))]
+    pub leverage: f64,
 
     /// Maximum daily drawdown in USD before circuit breaker
     #[validate(range(min = 1.0, max = 100_000.0))]

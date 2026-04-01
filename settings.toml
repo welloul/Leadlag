@@ -82,8 +82,9 @@ WIF = 1500
 # --- Risk Management ---
 
 [risk]
-max_notional_usd = 20.0     # Max size per single trade
-max_position_usd = 500.0    # Max net position per symbol
+max_notional_usd = 10.0     # Max size per single trade (Tuned for safety)
+max_position_usd = 50.0     # Max net position per symbol
+leverage = 5.0              # Default isolated/cross leverage to apply
 max_drawdown_daily = 200.0
 max_slippage_bps = 12.0
 signal_ttl_ms = 500             # Signal time-to-live
