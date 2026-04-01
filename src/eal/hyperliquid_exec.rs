@@ -328,13 +328,48 @@ impl HyperliquidLiveExecutor {
 
         for symbol in symbols {
             if let Some(&asset_index) = map.get(symbol) {
-                match exchange.update_leverage(wallet.clone(), asset_index, leverage, true).await {
-                    Ok(resp) => tracing::info!("SET LEVERAGE SUCCESS: {} (asset_index {}) -> {}x {:?}", symbol, asset_index, leverage, resp),
+                let vault_address = if self.main_address != self.wallet_address {
+                    Some(ethers_core::types::Address::from_str(&self.main_address).unwrap_or_default())
+                } else {
+                    None
+                };
+
+                match exchange.update_leverage(wallet.clone(), asset_index, leverage, false).await {
+                    Ok(resp) => tracing::info!("SET LEVERAGE SUCCESS: {} (asset_index {}) -> {}x Isolated {:?}", symbol, asset_index, leverage, resp),
                     Err(e) => tracing::error!("FAILED TO SET LEVERAGE for {}: {}", symbol, e),
                 }
-                
-                // Anti-flood throttle
-                tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+            }
+        }
+        
+        Ok(())
+    }
+
+    /// Cancel all open orders for the given symbols (Startup Clean Slate)
+    pub async fn cancel_all_open_orders(&self, symbols: &[String]) -> Result<(), ExecutionError> {
+        tracing::info!("Cleaning up stale open orders for {} symbols...", symbols.len());
+        
+        let map = self.asset_ctx.read().await;
+        let wallet_secret = self.wallet_secret.clone();
+        
+        let wallet = match LocalWallet::from_str(&wallet_secret) {
+            Ok(w) => Arc::new(w),
+            Err(e) => return Err(ExecutionError::ExchangeError(e.to_string())),
+        };
+
+        let exchange = Exchange::new(Chain::Arbitrum);
+        let vault_address = if self.main_address != self.wallet_address {
+            Some(ethers_core::types::Address::from_str(&self.main_address).unwrap_or_default())
+        } else {
+            None
+        };
+
+        for symbol in symbols {
+            if let Some(&asset_index) = map.get(symbol) {
+                // Cancel all by asset
+                match exchange.cancel_all_orders_by_asset(wallet.clone(), asset_index, vault_address).await {
+                    Ok(_) => tracing::info!("CLEANUP SUCCESS: Canceled all orders for {}", symbol),
+                    Err(e) => tracing::warn!("CLEANUP FAILED for {}: {}", symbol, e),
+                }
             }
         }
         
@@ -440,7 +475,31 @@ impl OrderExecution for HyperliquidLiveExecutor {
         }
 
         // Ideally parse `res.json::<ClearinghouseResponse>()` and return `Vec<Position>`.
-        Ok(vec![])
+        let json: serde_json::Value = res.json().await.map_err(|e| ExecutionError::ExchangeError(e.to_string()))?;
+        
+        let mut positions = Vec::new();
+        if let Some(asset_positions) = json.get("assetPositions").and_then(|ap| ap.as_array()) {
+            for entry in asset_positions {
+                if let Some(pos_obj) = entry.get("position") {
+                    let coin = pos_obj.get("coin").and_then(|c| c.as_str()).unwrap_or("UNKNOWN");
+                    let sz = pos_obj.get("szi").and_then(|s| s.as_str()).and_then(|s| s.parse::<f64>().ok()).unwrap_or(0.0);
+                    let entry_px = pos_obj.get("entryPx").and_then(|p| p.as_str()).and_then(|p| p.parse::<f64>().ok()).unwrap_or(0.0);
+                    
+                    if sz.abs() > 1e-8 {
+                        positions.push(Position {
+                            venue: self.venue_id,
+                            symbol: crate::eal::Symbol::new(coin),
+                            size: sz,
+                            entry_price: entry_px,
+                            unrealized_pnl: 0.0, // Calculated later if needed
+                            timestamp_ns: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64,
+                        });
+                    }
+                }
+            }
+        }
+        
+        Ok(positions)
     }
 
     async fn get_account_state(&self) -> Result<AccountState, ExecutionError> {

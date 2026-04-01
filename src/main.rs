@@ -58,11 +58,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let kill_switch_a = Arc::new(AtomicBool::new(false));
     let kill_switch_b = Arc::new(AtomicBool::new(false));
 
-    // Initialize OMS
-    let mut oms = OrderManagementSystem::new(settings.risk.clone(), settings.strategy.clone());
-    oms.register_kill_switch(VenueId::EXCHANGE_A, kill_switch_a.clone());
-    oms.register_kill_switch(VenueId::EXCHANGE_B, kill_switch_b.clone());
-    info!("OMS initialized with risk limits");
+    info!("Kill switches initialized");
 
     // Initialize signal pipeline
     let mut pipeline = SignalPipeline::<256>::new(settings.strategy.clone());
@@ -158,6 +154,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             tracing::warn!("Failed to synchronize leverage settings: {}", e);
         }
 
+        // Nuclear Cleanup: Cancel all stale orders for traded symbols
+        if let Err(e) = exec.cancel_all_open_orders(&settings.strategy.symbols).await {
+            tracing::warn!("Failed to cleanup stale orders: {}", e);
+        }
+
         exec.set_fill_tx(fill_tx.clone()).await;
         info!("Using Hyperliquid LIVE Execution Engine! (CAUTION: REAL CAPITAL)");
         Some(exec)
@@ -170,11 +171,31 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Main event loop
     info!("Entering main event loop...");
     
+    let mut oms = OrderManagementSystem::new(settings.risk.clone(), settings.strategy.clone());
+
     // Choose active executor for this session
     let executor: &dyn OrderExecution = match &live_executor {
         Some(e) => e,
         None => &simulator,
     };
+
+    // Startup Position Sync
+    // We only sync if we are in live mode to avoid polluting simulation with real balance
+    if live_executor.is_some() {
+        match executor.get_positions().await {
+            Ok(positions) => if !positions.is_empty() {
+                 oms.seed_positions(positions);
+            }
+            Err(e) => {
+                warn!("COULD NOT SYNC POSITIONS FROM EXCHANGE: {}. State might be incomplete.", e);
+            }
+        }
+    }
+
+    // Register kill switches manually for the OMS (pre-flight checks)
+    oms.register_kill_switch(eal::VenueId::EXCHANGE_A, kill_switch_a.clone());
+    oms.register_kill_switch(eal::VenueId::EXCHANGE_B, kill_switch_b.clone());
+    info!("OMS initialized with risk limits");
 
     let mut tick_count = 0u64;
     let mut signal_count = 0u64;

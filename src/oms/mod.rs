@@ -243,6 +243,30 @@ impl OrderManagementSystem {
         self.net_delta.register_kill_switch(venue, kill_switch);
     }
 
+    /// Seed initial positions from the exchange (Startup Sync)
+    pub fn seed_positions(&mut self, positions: Vec<Position>) {
+        for pos in positions {
+            tracing::info!("SYNC POSITION: {} on {:?} size={:.4} price={:.4}", 
+                pos.symbol.0, pos.venue, pos.size, pos.entry_price);
+            
+            // Create a pseudo-fill to update net delta
+            let side = if pos.size > 0.0 { OrderSide::Buy } else { OrderSide::Sell };
+            let fill = FillEvent {
+                order_id: crate::eal::OrderId(0),
+                client_order_id: "BOOTSTRAP".to_string(),
+                venue: pos.venue,
+                symbol: pos.symbol.clone(),
+                side,
+                filled_size: pos.size.abs(),
+                avg_price: pos.entry_price,
+                fee: 0.0,
+                fee_currency: "USDC".to_string(),
+                timestamp_ns: pos.timestamp_ns,
+            };
+            self.net_delta.update_position(&fill);
+        }
+    }
+
     /// Process a trade signal and generate an order if pre-flight checks pass.
     pub async fn process_signal(
         &mut self,
