@@ -1,4 +1,3 @@
-//! TokioParasite: Lead-Lag Arbitrage Bot
 //!
 //! Entry point for the bot. Orchestrates all modules:
 //! - Configuration loading
