@@ -444,7 +444,7 @@ impl OrderManagementSystem {
 
     /// Check for self-trade.
     fn check_self_trade(&self, signal: &TradeSignal) -> Result<(), RiskError> {
-        for pending in self.pending_orders.values() {
+        for (pending, _) in self.pending_orders.values() {
             if pending.symbol == signal.symbol && pending.venue == signal.target_venue {
                 // Check if opposite side
                 if (pending.side == OrderSide::Buy && signal.side == OrderSide::Sell)
