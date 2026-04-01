@@ -212,7 +212,7 @@ impl<const N: usize> SignalPipeline<N> {
                 let signal_venue = book.venue;
                 let target_venue = impulse.target_venue;
                 if !engine.has_edge(signal_venue, target_venue, impulse.side) {
-                    tracing::info!(
+                    tracing::debug!(
                         "Book-mid impulse rejected: edge < {} bps for {} {} on {:?}",
                         engine.entry_threshold_bps,
                         impulse.side,

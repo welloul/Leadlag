@@ -1,4 +1,3 @@
-//! Entry point for the bot. Orchestrates all modules:
 //! - Configuration loading
 //! - Exchange connectivity (EAL)
 //! - Signal processing pipeline

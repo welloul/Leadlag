@@ -137,15 +137,7 @@ impl ImpulseObiEngine {
         let target_mid = self.impulse_detector.current_mid(target_venue);
         if let (Some(src), Some(tgt)) = (source_mid, target_mid) {
             let edge = self.edge_bps(src, tgt, side);
-            let passed = edge >= self.entry_threshold_bps;
-            
-            if passed || edge.abs() > 1.0 {
-                tracing::info!(
-                    "EDGE CHECK: {:?} | src={:.2} tgt={:.2} side={:?} | edge={:.2} bps | threshold={:.1} bps | passed={}",
-                    signal_venue, src, tgt, side, edge, self.entry_threshold_bps, passed
-                );
-            }
-            passed
+            edge >= self.entry_threshold_bps
         } else {
             false // Can't compute edge without both mids
         }
