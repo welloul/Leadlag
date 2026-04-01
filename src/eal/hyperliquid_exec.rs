@@ -34,17 +34,13 @@ const HYPERLIQUID_INFO_URL: &str = "https://api.hyperliquid.xyz/info";
 pub struct HyperliquidLiveExecutor {
     venue_id: VenueId,
     client: reqwest::Client,
-    wallet_address: String, // Public address of the signer (Agent or Main)
-    main_address: String,   // Public address of the account owner
-    // Note: private key management is encapsulated inside the signing logic (usually via Wallet/Signer instances)
+    wallet_address: String,
+    main_address: String,
     wallet_secret: String,
-    
-    // Fill reporting channel passed from the main layout.
-    // Wrapped in an Arc<Mutex<Option<...>>> to allow mutation/injection.
     fill_tx: Arc<Mutex<Option<Sender<FillEvent>>>>,
-
-    // L1 Dictionary: Maps string coin names ("BTC") to numeric identifiers (0)
     asset_ctx: Arc<tokio::sync::RwLock<std::collections::HashMap<String, u32>>>,
+    /// CLOIDs of orders rejected by HL — drained every 500ms by OMS to clean pending_orders
+    pub rejected_cloids: Arc<Mutex<Vec<String>>>,
 }
 
 impl HyperliquidLiveExecutor {
@@ -58,6 +54,7 @@ impl HyperliquidLiveExecutor {
             wallet_secret,
             fill_tx: Arc::new(Mutex::new(None)),
             asset_ctx: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            rejected_cloids: Arc::new(Mutex::new(Vec::new())),
         }
     }
 
@@ -210,6 +207,9 @@ impl HyperliquidLiveExecutor {
         let wallet_address = self.wallet_address.clone();
         let asset_ctx_arc = self.asset_ctx.clone();
 
+        let rejected_cloids = self.rejected_cloids.clone();
+        let cloid_str_for_feedback = order.client_order_id.clone();
+
         tokio::spawn(async move {
             tracing::info!(
                 "Constructing Hyperliquid L1 Payload: {:?} {} {} @ {:?}",
@@ -305,11 +305,33 @@ impl HyperliquidLiveExecutor {
             
             match exchange.place_order(wallet, vec![hl_order], vault_address).await {
                 Ok(response) => {
+                    use hyperliquid::types::exchange::response::{Response, Status, StatusType};
+                    let mut was_rejected = false;
+                    if let Response::Ok(data) = &response {
+                        if let Some(StatusType::Statuses(statuses)) = &data.data {
+                            for status in statuses.iter() {
+                                if let Status::Error(e) = status {
+                                    tracing::warn!("ORDER REJECTED by HL: {} | cloid={}", e, cloid_str_for_feedback);
+                                    was_rejected = true;
+                                }
+                            }
+                        }
+                    } else if let Response::Err(e) = &response {
+                        tracing::warn!("ORDER REJECTED by HL (response err): {} | cloid={}", e, cloid_str_for_feedback);
+                        was_rejected = true;
+                    }
+                    if was_rejected {
+                        if let Ok(mut list) = rejected_cloids.lock() {
+                            list.push(cloid_str_for_feedback.clone());
+                        }
+                    }
                     tracing::info!("Exchange API response: {:?}", response);
-                    tracing::info!("Post-Only L1 payload built and sent for order {}", order.client_order_id);
                 }
                 Err(e) => {
                     tracing::error!("Failed to place order via Hyperliquid API: {}", e);
+                    if let Ok(mut list) = rejected_cloids.lock() {
+                        list.push(cloid_str_for_feedback);
+                    }
                 }
             }
         });

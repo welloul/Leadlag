@@ -498,6 +498,11 @@ impl OrderManagementSystem {
         &mut self.net_delta
     }
 
+    /// Expose pending_orders for direct eviction (e.g. HL rejection feedback)
+    pub fn pending_orders_mut(&mut self) -> &mut std::collections::HashMap<String, (OrderRequest, u64)> {
+        &mut self.pending_orders
+    }
+
     /// Check all positions for time-based exits.
     /// Returns exit TradeSignals for positions older than exit_timeout_ms.
     /// Update strategy settings for hot-reload.

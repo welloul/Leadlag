@@ -668,6 +668,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // ── Position Exit & TTL check every 500ms ──────────────────────────────
         if last_exit_check.elapsed().as_millis() >= 500 {
+            // Drain HL-rejected CLOIDs — evict ghost pending orders immediately
+            if let Some(ref live) = live_executor {
+                if let Ok(mut rejected) = live.rejected_cloids.lock() {
+                    for cloid in rejected.drain(..) {
+                        oms.pending_orders_mut().remove(&cloid);
+                        tracing::warn!("GHOST EVICTED: HL rejected order {} removed from OMS pending", cloid);
+                    }
+                }
+            }
+
             // Cancel orders whose TTL has lapsed
             oms.check_pending_ttl(executor).await;
 
