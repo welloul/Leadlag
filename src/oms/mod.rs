@@ -364,14 +364,21 @@ impl OrderManagementSystem {
         );
 
         // Create order request: Passive Limit Entry
+        // Offset by 1 tick (0.5 bps) on the passive side so post-only never gets rejected.
+        // Buys quote slightly below mid; Sells quote slightly above mid.
+        let tick_offset = current_price * 0.00005; // 0.5 bps = half a tick
+        let passive_price = match signal.side {
+            OrderSide::Buy  => current_price - tick_offset,
+            OrderSide::Sell => current_price + tick_offset,
+        };
         let order = if self.strategy_settings.active_strategy == "impulse_obi" {
-             // For impulse lead-lag, use Post-Only Limit at mid-price to save 5bps taker fee.
+             // For impulse lead-lag, use Post-Only Limit at mid-price minus 1 tick to avoid rejection.
              OrderRequest::limit(
                 signal.target_venue,
                 signal.symbol.clone(),
                 signal.side,
                 size,
-                current_price,
+                passive_price,
                 true, // post_only
                 false // reduce_only
              )
@@ -557,10 +564,11 @@ impl OrderManagementSystem {
 
         let exit_size = current_size.abs();
         
-        // Aggressive Limit Exit: add 1% slippage to guarantee execution
-        let slip_bps = 50.0; // 50 bps slippage
+        // Aggressive Limit Exit: add 100 bps slippage on aggressive side to guarantee fill.
+        // IOC + wide price = taker order that will sweep resting liquidity.
+        let slip_bps = 100.0;
         let limit_price = match signal.side {
-            OrderSide::Buy => _current_price * (1.0 + slip_bps / 10000.0),
+            OrderSide::Buy  => _current_price * (1.0 + slip_bps / 10000.0),
             OrderSide::Sell => _current_price * (1.0 - slip_bps / 10000.0),
         };
 
@@ -572,13 +580,28 @@ impl OrderManagementSystem {
             size: exit_size,
             price: Some(limit_price),
             post_only: false,
-            reduce_only: true, // Only reduce or close
+            reduce_only: true,
             client_order_id: format!("0x{:032x}", uuid::Uuid::new_v4().as_u128()),
         };
 
         match executor.submit_order(&order).await {
             Ok(ack) => {
-                // Exposure recalculates natively when the fill arrives.
+                // Optimistically clear position from OMS immediately.
+                // If the IOC misses (partial fill or rejection), the WS fill event
+                // will reconcile — but in 99% of cases this prevents repeated exit spamming.
+                let zero_fill = crate::eal::FillEvent {
+                    order_id: crate::eal::OrderId(0),
+                    client_order_id: order.client_order_id.clone(),
+                    venue: signal.target_venue,
+                    symbol: signal.symbol.clone(),
+                    side: signal.side,
+                    filled_size: exit_size, // Mark full size as cleared
+                    avg_price: _current_price,
+                    fee: 0.0,
+                    fee_currency: "USDC".to_string(),
+                    timestamp_ns: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64,
+                };
+                self.net_delta.update_position(&zero_fill);
                 Ok(ack)
             }
             Err(e) => Err(RiskError::ExecutionFailed(e.to_string())),

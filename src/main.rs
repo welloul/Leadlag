@@ -210,6 +210,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut tick_count_b = 0u64;
     let mut last_heartbeat = std::time::Instant::now();
     let mut last_config_check = std::time::Instant::now();
+    let mut last_exit_check = std::time::Instant::now(); // 500ms position exit timer
 
     // Per-symbol performance tracking
     let mut symbol_fills: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
@@ -660,26 +661,38 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             let med_pct = if total_signals > 0 { medium_conviction_count * 100 / total_signals } else { 0 };
             info!("  SIGNALS: HIGH={} ({}%) MEDIUM={} ({}%)", high_conviction_count, high_pct, medium_conviction_count, med_pct);
 
-            // Time-based exit: close positions older than exit_timeout_ms
-            let exit_signals = oms.check_time_exits();
+            // (Exit checks moved to 500ms timer below — do NOT duplicate here)
+
+            last_heartbeat = std::time::Instant::now();
+        }
+
+        // ── Position Exit & TTL check every 500ms ──────────────────────────────
+        if last_exit_check.elapsed().as_millis() >= 500 {
+            // Cancel orders whose TTL has lapsed
             oms.check_pending_ttl(executor).await;
+
+            // Close positions older than exit_timeout_ms
+            let exit_signals = oms.check_time_exits();
             for exit_signal in exit_signals {
-                let exec_price = simulator.get_mid_price(&exit_signal.symbol, exit_signal.target_venue)
+                let exec_price = simulator
+                    .get_mid_price(&exit_signal.symbol, exit_signal.target_venue)
                     .unwrap_or(0.0);
                 if exec_price > 0.0 {
                     match oms.process_exit_signal(&exit_signal, exec_price, executor).await {
                         Ok(ack) => {
-                            info!("ORDER_EXIT: {} {} | price={:.4} | id={}",
-                                exit_signal.side, exit_signal.symbol, exec_price, ack.order_id);
+                            info!(
+                                "TIME_EXIT: {} {} | price={:.4} | id={}",
+                                exit_signal.side, exit_signal.symbol, exec_price, ack.order_id
+                            );
                         }
                         Err(e) => {
-                            warn!("TIME EXIT rejected: {}", e);
+                            warn!("TIME_EXIT rejected: {}", e);
                         }
                     }
                 }
             }
 
-            last_heartbeat = std::time::Instant::now();
+            last_exit_check = std::time::Instant::now();
         }
 
         // Hot-Reload Configuration (every 15s)

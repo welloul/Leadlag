@@ -256,9 +256,13 @@ impl HyperliquidLiveExecutor {
             };
             
             let hl_tif = if order.post_only {
-                Tif::Alo
+                Tif::Alo  // Add-Liquidity-Only (post-only maker)
+            } else if order.order_type == crate::eal::OrderType::IOC {
+                Tif::Ioc  // Immediate-or-Cancel (aggressive taker / exits)
+            } else if order.reduce_only {
+                Tif::Gtc  // Good-Till-Cancelled (TP / resting limit exits)
             } else {
-                Tif::Ioc
+                Tif::Ioc  // Default fallback
             };
 
             let hl_order = HLOrderRequest {
