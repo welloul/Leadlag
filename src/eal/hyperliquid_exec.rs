@@ -345,30 +345,48 @@ impl HyperliquidLiveExecutor {
     }
 
     /// Cancel all open orders for the given symbols (Startup Clean Slate)
-    pub async fn cancel_all_open_orders(&self, symbols: &[String]) -> Result<(), ExecutionError> {
-        tracing::info!("Cleaning up stale open orders for {} symbols...", symbols.len());
+    pub async fn cancel_all_open_orders(&self, _symbols: &[String]) -> Result<(), ExecutionError> {
+        tracing::info!("Draining Hyperliquid L1 Order Book of stale orders...");
         
-        let map = self.asset_ctx.read().await;
-        let wallet_secret = self.wallet_secret.clone();
+        let payload = serde_json::json!({
+            "type": "openOrders",
+            "user": self.main_address
+        });
         
-        let wallet = match LocalWallet::from_str(&wallet_secret) {
-            Ok(w) => Arc::new(w),
-            Err(e) => return Err(ExecutionError::ExchangeError(e.to_string())),
-        };
+        let res = self.client.post(HYPERLIQUID_INFO_URL)
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|e| ExecutionError::ExchangeError(e.to_string()))?;
 
-        let exchange = Exchange::new(Chain::Arbitrum);
-        let vault_address = if self.main_address != self.wallet_address {
-            Some(ethers_core::types::Address::from_str(&self.main_address).unwrap_or_default())
-        } else {
-            None
-        };
+        if !res.status().is_success() {
+            return Err(ExecutionError::ExchangeError("Failed to fetch open orders".to_string()));
+        }
 
-        for symbol in symbols {
-            if let Some(&asset_index) = map.get(symbol) {
-                // Cancel all by asset
-                match exchange.cancel_all_orders_by_asset(wallet.clone(), asset_index, vault_address).await {
-                    Ok(_) => tracing::info!("CLEANUP SUCCESS: Canceled all orders for {}", symbol),
-                    Err(e) => tracing::warn!("CLEANUP FAILED for {}: {}", symbol, e),
+        let open_orders: serde_json::Value = res.json().await.map_err(|e| ExecutionError::ExchangeError(e.to_string()))?;
+        
+        if let Some(orders) = open_orders.as_array() {
+            if orders.is_empty() {
+                tracing::info!("No open orders found to clean up.");
+                return Ok(());
+            }
+
+            let wallet_secret = self.wallet_secret.clone();
+            let wallet = LocalWallet::from_str(&wallet_secret).map_err(|e| ExecutionError::ExchangeError(e.to_string()))?;
+            let exchange = Exchange::new(Chain::Arbitrum);
+            let vault_address = if self.main_address != self.wallet_address {
+                Some(ethers_core::types::Address::from_str(&self.main_address).unwrap_or_default())
+            } else {
+                None
+            };
+
+            for order in orders {
+                let coin = order.get("coin").and_then(|c| c.as_str()).unwrap_or("UNKNOWN");
+                let oid = order.get("oid").and_then(|o| o.as_u64()).unwrap_or(0);
+                
+                if oid > 0 {
+                    tracing::info!("CLEANUP: Canceling {} order {}", coin, oid);
+                    let _ = exchange.cancel_order(Arc::new(wallet.clone()), oid, vault_address).await;
                 }
             }
         }
