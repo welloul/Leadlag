@@ -363,25 +363,26 @@ impl OrderManagementSystem {
             base_size, strength_factor, size, current_price
         );
 
-        // Create order request: Passive Limit Entry
-        // Offset by 1 tick (0.5 bps) on the passive side so post-only never gets rejected.
-        // Buys quote slightly below mid; Sells quote slightly above mid.
-        let tick_offset = current_price * 0.00005; // 0.5 bps = half a tick
-        let passive_price = match signal.side {
-            OrderSide::Buy  => current_price - tick_offset,
-            OrderSide::Sell => current_price + tick_offset,
-        };
         let order = if self.strategy_settings.active_strategy == "impulse_obi" {
-             // For impulse lead-lag, use Post-Only Limit at mid-price minus 1 tick to avoid rejection.
-             OrderRequest::limit(
-                signal.target_venue,
-                signal.symbol.clone(),
-                signal.side,
+             // Market (IOC) Entry for impulse moves:
+             // Add 5 bps slippage to current mid-price to ensure the takers fill in the move.
+             let slippage = current_price * 0.0005; // 5 bps
+             let aggressive_price = match signal.side {
+                 OrderSide::Buy  => current_price + slippage,
+                 OrderSide::Sell => current_price - slippage,
+             };
+
+             OrderRequest {
+                venue: signal.target_venue,
+                symbol: signal.symbol.clone(),
+                side: signal.side,
+                order_type: crate::eal::OrderType::IOC,
                 size,
-                passive_price,
-                true, // post_only
-                false // reduce_only
-             )
+                price: Some(aggressive_price),
+                post_only: false,
+                reduce_only: false,
+                client_order_id: format!("0x{:032x}", uuid::Uuid::new_v4().as_u128()),
+             }
         } else {
             OrderRequest {
                 venue: signal.target_venue,
