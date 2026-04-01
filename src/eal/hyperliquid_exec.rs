@@ -202,8 +202,9 @@ impl HyperliquidLiveExecutor {
     fn dispatch_async_payload(&self, order: OrderRequest) {
         let client = self.client.clone();
         
-        let wallet_address = self.wallet_address.clone();
         let wallet_secret = self.wallet_secret.clone();
+        let main_address = self.main_address.clone();
+        let wallet_address = self.wallet_address.clone();
         let asset_ctx_arc = self.asset_ctx.clone();
 
         tokio::spawn(async move {
@@ -285,7 +286,13 @@ impl HyperliquidLiveExecutor {
 
             let exchange = Exchange::new(Chain::Arbitrum);
             
-            match exchange.place_order(wallet, vec![hl_order], None).await {
+            let vault_address = if main_address != wallet_address {
+                Some(ethers_core::types::Address::from_str(&main_address).unwrap_or_default())
+            } else {
+                None
+            };
+            
+            match exchange.place_order(wallet, vec![hl_order], vault_address).await {
                 Ok(response) => {
                     tracing::info!("Exchange API response: {:?}", response);
                     tracing::info!("Post-Only L1 payload built and sent for order {}", order.client_order_id);
