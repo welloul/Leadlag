@@ -357,10 +357,18 @@ impl OrderManagementSystem {
         } else {
             1.0
         };
-        let size = base_size * strength_factor;
+        let mut size = base_size * strength_factor;
+        
+        // Hyperliquid enforces a $10 minimum notional per order. 
+        // We enforce $10.1 locally to ensure stability.
+        let min_notional = 10.1;
+        if size * current_price < min_notional {
+            size = min_notional / current_price;
+        }
+
         tracing::debug!(
-            "Order size: base={:.6} × strength={:.2} = {:.6} (price={:.4})",
-            base_size, strength_factor, size, current_price
+            "Order size: base={:.6} × strength={:.2} => final_size={:.6} (notional=${:.2})",
+            base_size, strength_factor, size, size * current_price
         );
 
         let order = if self.strategy_settings.active_strategy == "impulse_obi" {
