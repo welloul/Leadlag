@@ -216,30 +216,34 @@ impl HyperliquidLiveExecutor {
                 order.price
             );
 
-            // PRE-FLIGHT FORMATTING: Hyperliquid strongly enforces string-formatted decimals
-            // and exact Time-In-Force (TiF) codes.
+            // PRE-FLIGHT FORMATTING: Hyperliquid requires max 5 significant figures for price.
             let is_buy = matches!(order.side, crate::eal::OrderSide::Buy);
-            let sz = order.size.to_string();
-            let (limit_price, tif_obj) = if order.post_only {
-                (order.price.unwrap_or(0.0).to_string(), serde_json::json!({ "limit": { "tif": "Alo" } }))
-            } else if order.order_type == crate::eal::OrderType::Market {
-                // For Market orders, we use a wide-boundary IOC to guarantee fill.
-                // Buy at extreme high price, Sell at extreme low price. 
-                // HL handles this effectively via its matching engine.
-                let p = if is_buy { 
-                    "1000000.0".to_string() 
-                } else { 
-                    "0.01".to_string() 
-                };
-                (p, serde_json::json!({ "limit": { "tif": "Ioc" } }))
-            } else {
-                (order.price.unwrap_or(0.0).to_string(), serde_json::json!({ "limit": { "tif": "Ioc" } }))
-            };
-
-            // Dynamically resolve exact API payload mappings at flight time
-            let map = asset_ctx_arc.read().await;
             
-            // Critical Safety Stop: Revert if coin exists in our universe but not HL!
+            // Format price to exactly 5 significant digits to avoid engine rejection
+            let raw_p = order.price.unwrap_or(0.0);
+            let p_abs = raw_p.abs();
+            let limit_price = if p_abs > 0.0 {
+                let power = p_abs.log10().floor() as i32;
+                let factor = 10_f64.powi(4 - power);
+                let rounded = (raw_p * factor).round() / factor;
+                format!("{}", rounded)
+            } else {
+                "0".to_string()
+            };
+            
+            // Format size properly depending on asset price tier
+            let sz = if raw_p > 100.0 {
+                format!("{:.4}", order.size)
+            } else if raw_p > 10.0 {
+                format!("{:.2}", order.size)
+            } else if raw_p > 1.0 {
+                format!("{:.1}", order.size)
+            } else {
+                format!("{:.0}", order.size)
+            };
+            let sz = sz.trim_end_matches('0').trim_end_matches('.').to_string();
+
+            let map = asset_ctx_arc.read().await;
             let asset_index = match map.get(&order.symbol.0) {
                 Some(&idx) => idx,
                 None => {
