@@ -535,6 +535,7 @@ impl OrderManagementSystem {
                     correlation_r: 0.0,
                     lag_offset_ns: 0,
                     timestamp_ns: now,
+                    price: None, // Will be filled by main loop or process_exit_signal
                 });
             }
         }

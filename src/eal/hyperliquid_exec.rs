@@ -363,15 +363,13 @@ impl HyperliquidLiveExecutor {
         
         // This logic mirrors the internal SDK place_order but for arbitrary actions
         let connection_id = action.connection_id(vault_address, nonce)
-            .map_err(|e| ExecutionError::ExchangeError(e))?;
+            .map_err(|e| ExecutionError::ExchangeError(e.to_string()))?;
         
         // Manual signing (SDK's sign_l1_action is private)
         use ethers_signers::Signer;
-        let chain_id = 1337; // HL L1 pseudo-chain ID for EIP-712
-        
         // Use the internal l1::Agent struct for correct EIP-712 hashing
         use hyperliquid::types::l1;
-        let source = "a".to_string(); // Arbitrum Mainnet mapping
+        let source = if self.venue_id == crate::eal::VenueId::EXCHANGE_B { "a".to_string() } else { "b".to_string() };
         let payload = l1::Agent {
             source,
             connection_id,

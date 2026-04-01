@@ -378,6 +378,8 @@ pub struct TradeSignal {
     pub lag_offset_ns: i64,
     /// Timestamp when signal was generated.
     pub timestamp_ns: u64,
+    /// Optional explicit price (for exits)
+    pub price: Option<f64>,
 }
 
 // ============================================================================
