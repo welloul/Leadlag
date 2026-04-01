@@ -20,7 +20,7 @@ use hyperliquid::types::{
     Action, Request,
 };
 use ethers_core::types::Address;
-use hyperliquid::exchange::Exchange as SDKExchange;
+use hyperliquid::Exchange;
 use ethers_signers::LocalWallet;
 use std::str::FromStr;
 
@@ -335,7 +335,7 @@ impl HyperliquidLiveExecutor {
         for symbol in symbols {
             if let Some(&asset_index) = map.get(symbol) {
                 // Manual EIP-712 Action because SDK 0.2.4 update_leverage is not vault-aware
-                let action = hyperliquid::types::exchange::request::Action::UpdateLeverage {
+                let action = Action::UpdateLeverage {
                     asset: asset_index,
                     is_cross: false, // Force Isolated as per requirement
                     leverage,

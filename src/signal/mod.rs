@@ -174,6 +174,7 @@ impl<const N: usize> SignalPipeline<N> {
                     correlation_r: strength,
                     lag_offset_ns: 0,
                     timestamp_ns: signal.timestamp_ns,
+                    price: None,
                 });
             }
         }
@@ -192,6 +193,7 @@ impl<const N: usize> SignalPipeline<N> {
                     correlation_r: 0.0,
                     lag_offset_ns: 0,
                     timestamp_ns: signal.timestamp_ns,
+                    price: None,
                 });
             }
         }
@@ -214,6 +216,7 @@ impl<const N: usize> SignalPipeline<N> {
                     correlation_r: strength,
                     lag_offset_ns: 0,
                     timestamp_ns: signal.timestamp_ns,
+                    price: None,
                 });
             }
         }
@@ -286,6 +289,7 @@ impl<const N: usize> SignalPipeline<N> {
                     correlation_r: best_r,
                     lag_offset_ns: best_lag as i64 * self.timegrid_precision_ns as i64,
                     timestamp_ns: pair.timestamp_ns,
+                    price: None,
                 });
             }
         }
@@ -364,6 +368,7 @@ mod tests {
             fill_conservatism: 0.5,
             high_conviction_only: true,
             exit_timeout_ms: 2000,
+            take_profit_bps: 10.0,
             symbol_timeouts: std::collections::HashMap::new(),
         };
 
@@ -401,6 +406,7 @@ mod tests {
             fill_conservatism: 0.5,
             high_conviction_only: true,
             exit_timeout_ms: 5000,
+            take_profit_bps: 8.0,
             symbol_timeouts: std::collections::HashMap::new(),
         };
 
