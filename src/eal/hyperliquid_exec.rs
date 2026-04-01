@@ -11,7 +11,7 @@ use tokio::sync::Mutex;
 
 use crate::eal::{
     AccountState, ExecutionError, FillEvent, OrderAck, OrderExecution, OrderId, OrderRequest,
-    Position, VenueId,
+    Position, Symbol, VenueId,
 };
 
 use hyperliquid::{Exchange, Hyperliquid};
