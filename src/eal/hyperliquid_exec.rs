@@ -14,6 +14,7 @@ use crate::eal::{
     Position, Symbol, VenueId,
 };
 
+use hyperliquid::{Exchange, Hyperliquid};
 use hyperliquid::types::{
     Chain,
     exchange::request::{OrderRequest as HLOrderRequest, OrderType as HLOrderType, Limit, Tif},
