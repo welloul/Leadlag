@@ -17,11 +17,9 @@ use crate::eal::{
 use hyperliquid::{Exchange, Hyperliquid};
 use hyperliquid::types::{
     Chain,
-    exchange::request::{OrderRequest as HLOrderRequest, OrderType as HLOrderType, Limit, Tif},
-    Action, Request,
+    exchange::request::{OrderRequest as HLOrderRequest, OrderType as HLOrderType, Limit, Tif, Action, Request},
 };
 use ethers_core::types::Address;
-use hyperliquid::Exchange;
 use ethers_signers::LocalWallet;
 use std::str::FromStr;
 
@@ -369,7 +367,7 @@ impl HyperliquidLiveExecutor {
         // Manual signing (SDK's sign_l1_action is private)
         use ethers_signers::Signer;
         // Use the internal l1::Agent struct for correct EIP-712 hashing
-        use hyperliquid::types::l1;
+        use hyperliquid::types::agent::l1;
         let source = if self.venue_id == crate::eal::VenueId::EXCHANGE_B { "a".to_string() } else { "b".to_string() };
         let payload = l1::Agent {
             source,
