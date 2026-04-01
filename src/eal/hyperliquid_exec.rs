@@ -380,13 +380,18 @@ impl HyperliquidLiveExecutor {
                 None
             };
 
+            use hyperliquid::types::exchange::request::CancelRequest;
+
             for order in orders {
                 let coin = order.get("coin").and_then(|c| c.as_str()).unwrap_or("UNKNOWN");
                 let oid = order.get("oid").and_then(|o| o.as_u64()).unwrap_or(0);
                 
-                if oid > 0 {
-                    tracing::info!("CLEANUP: Canceling {} order {}", coin, oid);
-                    let _ = exchange.cancel_order(Arc::new(wallet.clone()), oid, vault_address).await;
+                if let Some(asset_index) = map.get(coin) {
+                    if oid > 0 {
+                        tracing::info!("CLEANUP: Canceling {} order {}", coin, oid);
+                        let cancel_req = CancelRequest { asset: *asset_index, oid };
+                        let _ = exchange.cancel_order(Arc::new(wallet.clone()), vec![cancel_req], vault_address).await;
+                    }
                 }
             }
         }
