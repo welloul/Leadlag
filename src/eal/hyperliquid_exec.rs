@@ -25,7 +25,8 @@ const HYPERLIQUID_INFO_URL: &str = "https://api.hyperliquid.xyz/info";
 pub struct HyperliquidLiveExecutor {
     venue_id: VenueId,
     client: reqwest::Client,
-    wallet_address: String,
+    wallet_address: String, // Public address of the signer (Agent or Main)
+    main_address: String,   // Public address of the account owner
     // Note: private key management is encapsulated inside the signing logic (usually via Wallet/Signer instances)
     wallet_secret: String,
     
@@ -39,11 +40,12 @@ pub struct HyperliquidLiveExecutor {
 
 impl HyperliquidLiveExecutor {
     /// Create a new instance mapping secrets loaded from your environment.
-    pub fn new(venue_id: VenueId, wallet_address: String, wallet_secret: String) -> Self {
+    pub fn new(venue_id: VenueId, wallet_address: String, wallet_secret: String, main_address: Option<String>) -> Self {
         Self {
             venue_id,
             client: reqwest::Client::new(),
-            wallet_address,
+            wallet_address: wallet_address.clone(),
+            main_address: main_address.unwrap_or(wallet_address),
             wallet_secret,
             fill_tx: Arc::new(Mutex::new(None)),
             asset_ctx: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
@@ -365,7 +367,7 @@ impl OrderExecution for HyperliquidLiveExecutor {
     async fn get_positions(&self) -> Result<Vec<Position>, ExecutionError> {
         let payload = serde_json::json!({
             "type": "clearinghouseState",
-            "user": self.wallet_address
+            "user": self.main_address
         });
         
         tracing::info!("Synchronizing Hyperliquid boot state from clearinghouse...");

@@ -302,7 +302,7 @@ impl OrderManagementSystem {
             }
         }
         
-        let trade_notional = self.risk_settings.max_notional_usd;
+        let _trade_notional = self.risk_settings.max_notional_usd;
 
         if current_notional >= max_position_notional {
             // At cap — only allow if this trade REDUCES the position
@@ -393,7 +393,7 @@ impl OrderManagementSystem {
     pub fn process_fill(&mut self, fill: &FillEvent) -> Option<OrderRequest> {
         let venue_key = format!("{:?}", fill.venue);
         let sym_key = fill.symbol.0.clone();
-        let cap_key = (venue_key.clone(), sym_key.clone());
+        let _cap_key = (venue_key.clone(), sym_key.clone());
 
         // Handle pending order decay for partial fills (Internal Ripple Effect B)
         if let Some(pending) = self.pending_orders.get_mut(&fill.client_order_id) {
@@ -479,7 +479,7 @@ impl OrderManagementSystem {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos() as u64;
-        let exit_timeout_ns = self.strategy_settings.exit_timeout_ms * 1_000_000;
+        let _exit_timeout_ns = self.strategy_settings.exit_timeout_ms * 1_000_000;
 
         let mut exits = Vec::new();
 
@@ -521,7 +521,7 @@ impl OrderManagementSystem {
     pub async fn process_exit_signal(
         &mut self,
         signal: &TradeSignal,
-        current_price: f64,
+        _current_price: f64,
         executor: &dyn OrderExecution,
     ) -> Result<OrderAck, RiskError> {
         let current_size = self.net_delta.position_size(signal.target_venue, &signal.symbol);

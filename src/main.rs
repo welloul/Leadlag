@@ -143,7 +143,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let live_executor = if !settings.simulation.enabled {
         let wallet_address = std::env::var("HL_API_KEY").unwrap_or_default();
         let wallet_secret = std::env::var("HL_API_SECRET").unwrap_or_default();
-        let exec = eal::HyperliquidLiveExecutor::new(VenueId::EXCHANGE_B, wallet_address, wallet_secret);
+        let main_address = std::env::var("HL_MAIN_ADDRESS").ok();
+        
+        let exec = eal::HyperliquidLiveExecutor::new(VenueId::EXCHANGE_B, wallet_address, wallet_secret, main_address);
         
         // FATAL ABORT: We must sync the Meta State or L1 signatures crash instantly
         if let Err(e) = exec.load_asset_context().await {
@@ -167,6 +169,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     // Main event loop
     info!("Entering main event loop...");
+    
+    // Choose active executor for this session
+    let executor: &dyn OrderExecution = match &live_executor {
+        Some(e) => e,
+        None => &simulator,
+    };
+
     let mut tick_count = 0u64;
     let mut signal_count = 0u64;
 
@@ -542,7 +551,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                             start_ts_ns: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64,
                         });
                         if exec_price > 0.0 {
-                            match oms.process_signal(&signal, exec_price, &simulator).await {
+                            match oms.process_signal(&signal, exec_price, executor).await {
                                 Ok(ack) => {
                                     info!("ORDER_ENTRY: {} {} | price={:.4} | r={:.2} | id={}", 
                                         signal.side, signal.symbol, exec_price, signal.correlation_r, ack.order_id);
@@ -582,7 +591,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                     });
                     let exec_price = simulator.get_mid_price(&sig_sym, signal.target_venue)
                         .unwrap_or_else(|| book.best_bid().unwrap_or(0.0));
-                    match oms.process_signal(&signal, exec_price, &simulator).await {
+                    match oms.process_signal(&signal, exec_price, executor).await {
                         Ok(ack) => {
                             info!("Order submitted: {}", ack.order_id);
                             *symbol_fills.entry(sig_sym.0.clone()).or_insert(0) += 1;
@@ -598,11 +607,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         // Heartbeat every 5 seconds
         if last_heartbeat.elapsed().as_secs() >= 5 {
-            let sim_metrics = simulator.metrics();
             info!(
-                "HEARTBEAT | A ticks: {} | B ticks: {} | total: {} | signals: {} | {}",
-                tick_count_a, tick_count_b, tick_count, signal_count, sim_metrics.summary()
+                "HEARTBEAT | A ticks: {} | B ticks: {} | total: {} | signals: {}",
+                tick_count_a, tick_count_b, tick_count, signal_count
             );
+
+            let positions = oms.net_delta().positions();
+            if !positions.is_empty() {
+                info!("OMS POSITIONS (Total: {}):", positions.len());
+                for pos in positions {
+                    info!("  {:?} {} | size={:.4} | entry={:.4}", 
+                        pos.venue, pos.symbol, pos.size, pos.entry_price);
+                }
+            }
 
             // Per-symbol performance tracking
             let mut sym_stats: Vec<String> = Vec::new();
@@ -627,7 +644,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let exec_price = simulator.get_mid_price(&exit_signal.symbol, exit_signal.target_venue)
                     .unwrap_or(0.0);
                 if exec_price > 0.0 {
-                    match oms.process_exit_signal(&exit_signal, exec_price, &simulator).await {
+                    match oms.process_exit_signal(&exit_signal, exec_price, executor).await {
                         Ok(ack) => {
                             info!("ORDER_EXIT: {} {} | price={:.4} | id={}",
                                 exit_signal.side, exit_signal.symbol, exec_price, ack.order_id);
@@ -664,7 +681,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 info!("ENTRY FILLED: Submitting TP Limit for {} {} @ {:.4}", 
                     tp_order.symbol, tp_order.side, tp_price);
                 
-                match simulator.submit_order(&tp_order).await {
+                match executor.submit_order(&tp_order).await {
                     Ok(ack) => { 
                         info!("TP_SUBMITTED: {} {} | price={:.4} | id={}",
                             tp_order.side, tp_order.symbol, tp_price, ack.order_id);
