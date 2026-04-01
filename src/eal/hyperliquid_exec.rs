@@ -391,8 +391,9 @@ impl HyperliquidLiveExecutor {
             .map_err(|e| ExecutionError::ExchangeError(e.to_string()))?;
 
         if !res.status().is_success() {
+            let status = res.status();
             let body = res.text().await.unwrap_or_default();
-            return Err(ExecutionError::ExchangeError(format!("Action rejected ({}): {}", res.status(), body)));
+            return Err(ExecutionError::ExchangeError(format!("Action rejected ({}): {}", status, body)));
         }
         
         Ok(())
