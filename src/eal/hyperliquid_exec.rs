@@ -38,7 +38,8 @@ pub struct HyperliquidLiveExecutor {
     main_address: String,
     wallet_secret: String,
     fill_tx: Arc<Mutex<Option<Sender<FillEvent>>>>,
-    asset_ctx: Arc<tokio::sync::RwLock<std::collections::HashMap<String, u32>>>,
+    // L1 Dictionary: Maps string coin names ("BTC") to (assetIndex, szDecimals)
+    asset_ctx: Arc<tokio::sync::RwLock<std::collections::HashMap<String, (u32, i32)>>>,
     /// CLOIDs of orders rejected by HL — drained every 500ms by OMS to clean pending_orders
     pub rejected_cloids: Arc<std::sync::Mutex<Vec<String>>>,
 }
@@ -79,11 +80,12 @@ impl HyperliquidLiveExecutor {
                 let mut map = self.asset_ctx.write().await;
                 for (idx, coin_data) in universe.iter().enumerate() {
                     if let Some(name) = coin_data.get("name").and_then(|n| n.as_str()) {
+                        let sz_decimals = coin_data.get("szDecimals").and_then(|d| d.as_i64()).unwrap_or(0) as i32;
                         // Numeric index inside the array is the authoritative `assetIndex`
-                        map.insert(name.to_string(), idx as u32);
+                        map.insert(name.to_string(), (idx as u32, sz_decimals));
                     }
                 }
-                tracing::info!("Successfully loaded {} asset index mappings.", map.len());
+                tracing::info!("Successfully loaded {} asset index mappings with lot size decimals.", map.len());
             }
         }
         Ok(())
@@ -247,23 +249,19 @@ impl HyperliquidLiveExecutor {
             let sz = sz.trim_end_matches('0').trim_end_matches('.').to_string();
 
             let map = asset_ctx_arc.read().await;
-            let asset_index = match map.get(&order.symbol.0) {
-                Some(&idx) => idx,
+            let (asset_index, sz_decimals) = match map.get(&order.symbol.0) {
+                Some(&(idx, dec)) => (idx, dec),
                 None => {
                     tracing::error!("FATAL ABORT: Attempted to trade {}, but it does not exist in Hyperliquid's live Meta-State!", order.symbol.0);
                     return;
                 }
             };
-            
-            let hl_tif = if order.post_only {
-                Tif::Alo  // Add-Liquidity-Only (post-only maker)
-            } else if order.order_type == crate::eal::OrderType::IOC {
-                Tif::Ioc  // Immediate-or-Cancel (aggressive taker / exits)
-            } else if order.reduce_only {
-                Tif::Gtc  // Good-Till-Cancelled (TP / resting limit exits)
-            } else {
-                Tif::Ioc  // Default fallback
-            };
+
+            // Format size properly using the asset's lot size (szDecimals)
+            let sz = format!("{:.*}", sz_decimals as usize, order.size);
+            let sz = sz.trim_end_matches('0').trim_end_matches('.').to_string();
+            // Fallback for case where it rounds to empty string or "."
+            let sz = if sz.is_empty() { "0".to_string() } else { sz };
 
             let hl_order = HLOrderRequest {
                 asset: asset_index,
@@ -358,7 +356,7 @@ impl HyperliquidLiveExecutor {
         };
 
         for symbol in symbols {
-            if let Some(&asset_index) = map.get(symbol) {
+            if let Some(&(asset_index, _sz_dec)) = map.get(symbol) {
                 // Manual EIP-712 Action because SDK 0.2.4 update_leverage is not vault-aware
                 let action = Action::UpdateLeverage {
                     asset: asset_index,
@@ -468,10 +466,10 @@ impl HyperliquidLiveExecutor {
                 let coin = order.get("coin").and_then(|c| c.as_str()).unwrap_or("UNKNOWN");
                 let oid = order.get("oid").and_then(|o| o.as_u64()).unwrap_or(0);
                 
-                if let Some(asset_index) = map.get(coin) {
+                if let Some(&(asset_index, _sz_dec)) = map.get(coin) {
                     if oid > 0 {
                         tracing::info!("CLEANUP: Canceling {} order {}", coin, oid);
-                        let cancel_req = CancelRequest { asset: *asset_index, oid };
+                        let cancel_req = CancelRequest { asset: asset_index, oid };
                         let _ = exchange.cancel_order(Arc::new(wallet.clone()), vec![cancel_req], vault_address).await;
                     }
                 }
@@ -525,8 +523,8 @@ impl OrderExecution for HyperliquidLiveExecutor {
 
         tokio::spawn(async move {
             let map = asset_ctx_arc.read().await;
-            let asset_index = match map.get(&symbol_str) {
-                Some(&idx) => idx,
+            let (asset_index, _sz_dec) = match map.get(&symbol_str) {
+                Some(&(idx, dec)) => (idx, dec),
                 None => return,
             };
 
