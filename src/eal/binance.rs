@@ -243,9 +243,20 @@ impl BinanceExchange {
         let ws_symbol = format!("{}usdt", symbol.0.to_lowercase());
         let url = format!("wss://fstream.binance.com/ws/{}@trade", ws_symbol);
 
-        let (ws_stream, _) = connect_async(&url)
+        let parsed_url = url::Url::parse(&url)
+            .map_err(|e| ExchangeError::ConnectionFailed(format!("URL Parse Error: {}", e)))?;
+        let host = parsed_url.host_str().unwrap_or("");
+        let port = parsed_url.port_or_known_default().unwrap_or(443);
+        
+        let tcp_stream = tokio::net::TcpStream::connect((host, port))
             .await
-            .map_err(|e| ExchangeError::ConnectionFailed(e.to_string()))?;
+            .map_err(|e| ExchangeError::ConnectionFailed(format!("TCP Connect: {}", e)))?;
+        tcp_stream.set_nodelay(true)
+            .map_err(|e| ExchangeError::ConnectionFailed(format!("TCP NoDelay: {}", e)))?;
+
+        let (ws_stream, _) = tokio_tungstenite::client_async_tls(url, tcp_stream)
+            .await
+            .map_err(|e| ExchangeError::ConnectionFailed(format!("WS Handshake: {}", e)))?;
 
         let (mut write, mut read) = ws_stream.split();
 
@@ -337,9 +348,20 @@ impl BinanceExchange {
             "wss://fstream.binance.com/ws/{}@depth@100ms",
             ws_symbol
         );
-        let (ws_stream, _) = connect_async(&url)
+        let parsed_url = url::Url::parse(&url)
+            .map_err(|e| ExchangeError::ConnectionFailed(format!("URL Parse Error: {}", e)))?;
+        let host = parsed_url.host_str().unwrap_or("");
+        let port = parsed_url.port_or_known_default().unwrap_or(443);
+
+        let tcp_stream = tokio::net::TcpStream::connect((host, port))
             .await
-            .map_err(|e| ExchangeError::ConnectionFailed(e.to_string()))?;
+            .map_err(|e| ExchangeError::ConnectionFailed(format!("TCP Connect: {}", e)))?;
+        tcp_stream.set_nodelay(true)
+            .map_err(|e| ExchangeError::ConnectionFailed(format!("TCP NoDelay: {}", e)))?;
+
+        let (ws_stream, _) = tokio_tungstenite::client_async_tls(url, tcp_stream)
+            .await
+            .map_err(|e| ExchangeError::ConnectionFailed(format!("WS Handshake: {}", e)))?;
 
         let (mut write, mut read) = ws_stream.split();
 

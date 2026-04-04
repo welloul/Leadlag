@@ -81,9 +81,20 @@ impl HyperliquidExchange {
         tick_sender: &Sender<Arc<Tick>>,
         book_sender: &Option<Sender<Arc<BookUpdate>>>,
     ) -> Result<(), ExchangeError> {
-        let (ws_stream, _) = connect_async(WS_URL)
+        let url = url::Url::parse(WS_URL)
+            .map_err(|e| ExchangeError::ConnectionFailed(format!("URL Parse Error: {}", e)))?;
+        let host = url.host_str().unwrap_or("");
+        let port = url.port_or_known_default().unwrap_or(443);
+        
+        let tcp_stream = tokio::net::TcpStream::connect((host, port))
             .await
-            .map_err(|e| ExchangeError::ConnectionFailed(e.to_string()))?;
+            .map_err(|e| ExchangeError::ConnectionFailed(format!("TCP Connect: {}", e)))?;
+        tcp_stream.set_nodelay(true)
+            .map_err(|e| ExchangeError::ConnectionFailed(format!("TCP NoDelay: {}", e)))?;
+
+        let (ws_stream, _) = tokio_tungstenite::client_async_tls(WS_URL, tcp_stream)
+            .await
+            .map_err(|e| ExchangeError::ConnectionFailed(format!("WS Handshake: {}", e)))?;
 
         let (mut write, mut read) = ws_stream.split();
 

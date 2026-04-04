@@ -49,7 +49,7 @@ impl HyperliquidLiveExecutor {
     pub fn new(venue_id: VenueId, wallet_address: String, wallet_secret: String, main_address: Option<String>) -> Self {
         Self {
             venue_id,
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder().tcp_nodelay(true).build().unwrap_or_else(|_| reqwest::Client::new()),
             wallet_address: wallet_address.clone(),
             main_address: main_address.unwrap_or(wallet_address),
             wallet_secret,
@@ -103,12 +103,27 @@ impl HyperliquidLiveExecutor {
         tokio::spawn(async move {
             tracing::info!("Initializing Authenticated Hyperliquid User Stream...");
             
-            // Reconnection loop for the User Stream
             loop {
-                use tokio_tungstenite::connect_async;
+                use tokio_tungstenite::client_async_tls;
                 use futures_util::{SinkExt, StreamExt};
                 
-                let ws_res = connect_async("wss://api.hyperliquid.xyz/ws").await;
+                let ws_res = async {
+                    let parsed_url = url::Url::parse("wss://api.hyperliquid.xyz/ws")
+                        .map_err(|e| format!("URL Parse Error: {}", e))?;
+                    let host = parsed_url.host_str().unwrap_or("");
+                    let port = parsed_url.port_or_known_default().unwrap_or(443);
+                    
+                    let tcp_stream = tokio::net::TcpStream::connect((host, port))
+                        .await
+                        .map_err(|e| format!("TCP Connect: {}", e))?;
+                    tcp_stream.set_nodelay(true)
+                        .map_err(|e| format!("TCP NoDelay: {}", e))?;
+            
+                    client_async_tls("wss://api.hyperliquid.xyz/ws", tcp_stream)
+                        .await
+                        .map_err(|e| format!("WS Handshake: {}", e))
+                }.await;
+
                 if let Ok((ws_stream, _)) = ws_res {
                     let (mut write, mut read) = ws_stream.split();
                     
