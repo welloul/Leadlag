@@ -146,7 +146,8 @@ impl PaperSimulator {
 
     /// Update the order book from a real L2 BookUpdate.
     pub fn update_book(&self, update: BookUpdate) {
-        let key = (update.symbol.clone(), update.venue);
+        let norm_sym = update.symbol.normalize();
+        let key = (norm_sym, update.venue);
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
 
         {
@@ -185,7 +186,8 @@ impl PaperSimulator {
             asks.push(BookLevel { price: price + half_spread + offset, size: 10000.0 });
         }
 
-        let key = (symbol.clone(), venue);
+        let norm_sym = symbol.normalize();
+        let key = (norm_sym, venue);
         let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
 
         {
@@ -254,12 +256,12 @@ impl PaperSimulator {
 
     pub fn is_venue_liquid(&self, symbol: &Symbol, venue: VenueId) -> bool {
         let matchers = self.matchers.lock().unwrap();
-        matchers.get(&(symbol.clone(), venue)).map_or(false, |m| !m.bids.is_empty())
+        matchers.get(&(symbol.normalize(), venue)).map_or(false, |m| !m.bids.is_empty())
     }
 
     pub fn book_staleness_ns(&self, symbol: &Symbol, venue: VenueId) -> Option<u64> {
         let states = self.book_states.lock().unwrap();
-        states.get(&(symbol.clone(), venue)).and_then(|s| {
+        states.get(&(symbol.normalize(), venue)).and_then(|s| {
             if s.has_real_data {
                 let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos() as u64;
                 Some(now.saturating_sub(s.last_update_ns))
@@ -269,20 +271,20 @@ impl PaperSimulator {
 
     pub fn get_mid_price(&self, symbol: &Symbol, venue: VenueId) -> Option<f64> {
         let matchers = self.matchers.lock().unwrap();
-        matchers.get(&(symbol.clone(), venue)).and_then(|m| m.mid_price())
+        matchers.get(&(symbol.normalize(), venue)).and_then(|m| m.mid_price())
     }
 
     /// Get the best bid size for a symbol on a venue.
     pub fn get_best_bid_size(&self, symbol: &Symbol, venue: VenueId) -> Option<f64> {
         self.matchers.lock().unwrap()
-            .get(&(symbol.clone(), venue))
+            .get(&(symbol.normalize(), venue))
             .map(|m| m.best_bid_size())
     }
 
     /// Get the best ask size for a symbol on a venue.
     pub fn get_best_ask_size(&self, symbol: &Symbol, venue: VenueId) -> Option<f64> {
         self.matchers.lock().unwrap()
-            .get(&(symbol.clone(), venue))
+            .get(&(symbol.normalize(), venue))
             .map(|m| m.best_ask_size())
     }
 
