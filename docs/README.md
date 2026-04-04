@@ -84,12 +84,24 @@ cargo test
 
 | Module | File | Purpose |
 |--------|------|---------|
-| `signal` | `src/signal/` | Hot path: correlation, hysteresis, ring buffer |
-| `eal` | `src/eal/` | Exchange Abstraction Layer |
-| `oms` | `src/oms/` | Order Management System + risk |
-| `sim` | `src/sim/` | Paper trading simulator |
+| `signal`  | `src/signal/`  | Hot path: correlation, hysteresis, ring buffer |
+| `eal`     | `src/eal/`     | Exchange Abstraction Layer |
+| `oms`     | `src/oms/`     | Order Management System + risk |
+| `sim`     | `src/sim/`     | Paper trading simulator |
+| `runners` | `src/runners/` | Isolated execution loops (Paper vs Live) |
 | `persist` | `src/persist/` | Telemetry + state store |
-| `config` | `src/config/` | Settings validation |
+| `config`  | `src/config/`  | Settings validation |
+
+## Documentation Index
+
+- [Architecture Overview](docs/architecture.md)
+- [Strategy (Math & OBI Fusion)](docs/OVERVIEW.md)
+- [Live Trading Workflow](docs/livetrading.md)
+- [Configuration Guide](docs/modules/config.md)
+- [Order Management (OMS)](docs/modules/oms.md)
+- [Runners & Execution Modes](docs/modules/runners.md)
+- [Simulator (Paper)](docs/modules/sim.md)
+- [Telemetry (Proto3)](docs/modules/telemetry.md)
 
 ## Key Metrics
 

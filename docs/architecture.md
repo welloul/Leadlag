@@ -20,7 +20,16 @@
 │                    │           │           │           │                        │
 │                    ▼           ▼           ▼           ▼                        │
 │  ┌─────────────────────────────────────────────────────────────────────────┐   │
-│  │                      MAIN LOOP (Async Tokio Task)                        │   │
+│  │                  RUNNERS LAYER (Isolated Logic)                         │   │
+│  │  ┌─────────────────────────┐       ┌─────────────────────────┐          │   │
+│  │  │   runners::paper        │       │   runners::live         │          │   │
+│  │  │   (Simulation Loop)     │       │   (Real Capital Loop)   │          │   │
+│  │  └─────────────────────────┘       └─────────────────────────┘          │   │
+│  └─────────────────────────────────────────────────────────────────────────┘   │
+│                    │           │           │           │                        │
+│                    ▼           ▼           ▼           ▼                        │
+│  ┌─────────────────────────────────────────────────────────────────────────┐   │
+│  │                   ACTIVE EVENT LOOP (Selected by Config)                │   │
 │  │                                                                          │   │
 │  │  ┌───────────────── ENTRY LOGIC (v0.2.0 MAKER) ─────────────────────────┐  │   │
 │  │  │                                                                    │  │   │
@@ -253,7 +262,8 @@
 │  │  ├─ Impulse-OBI: tick → process_tick()                                │   │
 │  │  └─ Impulse-OBI: book → process_book()                                │   │
 │  │                                                                         │   │
-│  │  signal → oms.process_signal() → PaperSimulator.submit_order()        │   │
+│  │  signal → oms.process_signal() → executor.submit_order()                   │   │
+│  │  (executor = PaperSimulator OR HyperliquidLiveExecutor)                    │   │
 │  │                                                                         │   │
 │  └─────────────────────────────────────────────────────────────────────────┘   │
 │                                                                                 │

@@ -1,6 +1,15 @@
 NOTE TO AI AGENTS<>
 DISREGARD THIS FILE IT IS FOR MY PERSONAL USE
+.////////////////////////////////////
+//1. The "Invisible" Killer: TCP_NODELAY
+//By default, many systems use Nagle's Algorithm, which/ buffers small packets to send them in one big chunk. In HFT, this is poison. It can add 10–40ms of "invisible" lag to your orders.
 
+When you set up your TcpStream before wrapping it in tokio-tungstenite, you must disable it:
+
+Rust
+let socket = TcpStream::connect("stream.bybit.com:443").await?;
+socket.set_nodelay(true)?; // This is mandatory for HFT//
+/////////////////////////////////////////////////////////
 
 👉 a queue-aware execution model (this is where your system jumps another level)
 

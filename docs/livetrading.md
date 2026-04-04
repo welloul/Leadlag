@@ -5,7 +5,7 @@ Transition the TokioParasite bot from `PaperSimulator` to live asynchronous exec
 
 ## 🏗️ Architectural Overview
 The bot's core execution flow relies on the `OrderExecution` trait within the Exchange Abstraction Layer (EAL).
-The `HyperliquidLiveExecutor` handles real-world connectivity, cryptographic signing, and order synchronization.
+The `HyperliquidLiveExecutor` handles real-world connectivity, cryptographic signing, and order synchronization. The execution loop is isolated in `src/runners/live.rs`.
 
 ## ✅ Completed Fixes (v0.2.0)
 
