@@ -175,6 +175,8 @@ impl<const N: usize> SignalPipeline<N> {
                     lag_offset_ns: 0,
                     timestamp_ns: signal.timestamp_ns,
                     price: None,
+                    best_bid_size: None,
+                    best_ask_size: None,
                 });
             }
         }
@@ -194,6 +196,8 @@ impl<const N: usize> SignalPipeline<N> {
                     lag_offset_ns: 0,
                     timestamp_ns: signal.timestamp_ns,
                     price: None,
+                    best_bid_size: None,
+                    best_ask_size: None,
                 });
             }
         }
@@ -233,6 +237,8 @@ impl<const N: usize> SignalPipeline<N> {
                     lag_offset_ns: 0,
                     timestamp_ns: impulse.timestamp_ns,
                     price: None,
+                    best_bid_size: None,
+                    best_ask_size: None,
                 });
             }
         }
@@ -306,6 +312,8 @@ impl<const N: usize> SignalPipeline<N> {
                     lag_offset_ns: best_lag as i64 * self.timegrid_precision_ns as i64,
                     timestamp_ns: pair.timestamp_ns,
                     price: None,
+                    best_bid_size: None,
+                    best_ask_size: None,
                 });
             }
         }

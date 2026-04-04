@@ -347,8 +347,6 @@ impl OrderManagementSystem {
 
         // Calculate order size based on max notional.
         // For impulse-obi strategy, correlation_r carries the signal strength factor
-        // (set by the signal pipeline as impulse_bps / impulse_threshold_bps, clamped 0.5-2.0).
-        // Larger impulse magnitude → proportionally larger position, up to 2x base.
         let base_size = self.risk_settings.max_notional_usd / current_price;
         let strength_factor = if self.strategy_settings.active_strategy == "impulse_obi"
             && signal.correlation_r > 0.0
@@ -358,6 +356,31 @@ impl OrderManagementSystem {
             1.0
         };
         let mut size = base_size * strength_factor;
+
+        tracing::debug!(
+            "Order size (pre-liquidity): base={:.6} × strength={:.2} => size={:.6} (notional=${:.2})",
+            base_size, strength_factor, size, size * current_price
+        );
+
+        // Liquidity-Aware Sizing: Cap size by best level * fill_conservatism
+        let fill_conservatism = self.strategy_settings.fill_conservatism;
+        let available_size = match signal.side {
+            OrderSide::Buy => signal.best_ask_size,
+            OrderSide::Sell => signal.best_bid_size,
+        };
+
+        if let Some(level_size) = available_size {
+            let liquidity_cap = level_size * fill_conservatism;
+            if size > liquidity_cap {
+                tracing::info!(
+                    "LIQUIDITY CAP: Reducing size from {:.6} to {:.6} ({:.0}% of best level size {:.6})",
+                    size, liquidity_cap, fill_conservatism * 100.0, level_size
+                );
+                size = liquidity_cap;
+            }
+        } else {
+            tracing::warn!("No best level size available for signal, using signal magnitude sizing only.");
+        }
         
         // Hyperliquid enforces a $10 minimum notional per order. 
         // We enforce $10.1 locally to ensure stability.
@@ -366,9 +389,9 @@ impl OrderManagementSystem {
             size = min_notional / current_price;
         }
 
-        tracing::debug!(
-            "Order size: base={:.6} × strength={:.2} => final_size={:.6} (notional=${:.2})",
-            base_size, strength_factor, size, size * current_price
+        tracing::info!(
+            "FINAL ORDER: {} {} | size={:.6} | notional=${:.2} | r={:.2}",
+            signal.side, signal.symbol, size, size * current_price, strength_factor
         );
 
         let order = if self.strategy_settings.active_strategy == "impulse_obi" {
@@ -557,6 +580,8 @@ impl OrderManagementSystem {
                     lag_offset_ns: 0,
                     timestamp_ns: now,
                     price: None, // Will be filled by main loop or process_exit_signal
+                    best_bid_size: None,
+                    best_ask_size: None,
                 });
             }
         }

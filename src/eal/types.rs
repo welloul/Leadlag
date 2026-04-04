@@ -380,6 +380,10 @@ pub struct TradeSignal {
     pub timestamp_ns: u64,
     /// Optional explicit price (for exits)
     pub price: Option<f64>,
+    /// Best bid size at time of signal (for liquidity-aware sizing)
+    pub best_bid_size: Option<f64>,
+    /// Best ask size at time of signal
+    pub best_ask_size: Option<f64>,
 }
 
 // ============================================================================

@@ -285,16 +285,21 @@ pub async fn run(settings: Settings) -> Result<(), Box<dyn std::error::Error>> {
                     _ => {
                         let exec_price = simulator.get_mid_price(&sig_sym, signal.target_venue)
                             .unwrap_or(tick.price);
+                        
+                        let mut signal = signal;
+                        signal.best_bid_size = simulator.get_best_bid_size(&sig_sym, signal.target_venue);
+                        signal.best_ask_size = simulator.get_best_ask_size(&sig_sym, signal.target_venue);
+
                         match oms.process_signal(&signal, exec_price, &simulator).await {
-                            Ok(ack) => {
-                                info!("ORDER_ENTRY: {} {} | price={:.4} | r={:.2} | id={}", 
-                                    signal.side, signal.symbol, exec_price, signal.correlation_r, ack.order_id);
-                                *symbol_fills.entry(sig_sym.0.clone()).or_insert(0) += 1;
-                            }
-                            Err(e) => {
-                                warn!("Order rejected: {}", e);
-                                *symbol_rejects.entry(sig_sym.0.clone()).or_insert(0) += 1;
-                            }
+                             Ok(ack) => {
+                                 info!("ORDER_ENTRY: {} {} | price={:.4} | r={:.2} | id={}", 
+                                     signal.side, signal.symbol, exec_price, signal.correlation_r, ack.order_id);
+                                 *symbol_fills.entry(sig_sym.0.clone()).or_insert(0) += 1;
+                             }
+                             Err(e) => {
+                                 warn!("Order rejected: {}", e);
+                                 *symbol_rejects.entry(sig_sym.0.clone()).or_insert(0) += 1;
+                             }
                         }
                     }
                 }
@@ -549,6 +554,11 @@ pub async fn run(settings: Settings) -> Result<(), Box<dyn std::error::Error>> {
                     });
                     let exec_price = simulator.get_mid_price(&sig_sym, signal.target_venue)
                         .unwrap_or_else(|| book.best_bid().unwrap_or(0.0));
+                    
+                    let mut signal = signal;
+                    signal.best_bid_size = simulator.get_best_bid_size(&sig_sym, signal.target_venue);
+                    signal.best_ask_size = simulator.get_best_ask_size(&sig_sym, signal.target_venue);
+
                     match oms.process_signal(&signal, exec_price, executor).await {
                         Ok(ack) => {
                             info!("Order submitted: {}", ack.order_id);

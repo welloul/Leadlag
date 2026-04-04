@@ -272,6 +272,20 @@ impl PaperSimulator {
         matchers.get(&(symbol.clone(), venue)).and_then(|m| m.mid_price())
     }
 
+    /// Get the best bid size for a symbol on a venue.
+    pub fn get_best_bid_size(&self, symbol: &Symbol, venue: VenueId) -> Option<f64> {
+        self.matchers.lock().unwrap()
+            .get(&(symbol.clone(), venue))
+            .map(|m| m.best_bid_size())
+    }
+
+    /// Get the best ask size for a symbol on a venue.
+    pub fn get_best_ask_size(&self, symbol: &Symbol, venue: VenueId) -> Option<f64> {
+        self.matchers.lock().unwrap()
+            .get(&(symbol.clone(), venue))
+            .map(|m| m.best_ask_size())
+    }
+
     async fn simulate_fill(&self, order: &OrderRequest, _prov: FillProvenance) -> Result<FillEvent, ExecutionError> {
         if self.settings.latency_simulation_ms > 0 {
             tokio::time::sleep(Duration::from_millis(self.settings.latency_simulation_ms)).await;
