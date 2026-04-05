@@ -45,7 +45,7 @@ enable_obi = true
 obi_weight = 0.3
 
 # Impulse-OBI settings
-impulse_threshold_bps = 30.0       # captures higher conviction moves (+ taker fee)
+impulse_threshold_bps = 50.0       # captures extreme conviction moves
 lag_threshold_bps = 1.0          # Lowered: tighter lag gate — 1 bps divergence is enough
 impulse_window_ms = 5            # Lookback window (unchanged)
 signal_timeout_ms = 250          # Combo window raised (was 150ms) — wider window catches more OBI+impulse pairs
@@ -65,19 +65,19 @@ max_levels_consumed = 5          # Be more aggressive on the breakthrough
 obi_persist_ms = 30              # CRITICAL: was 200ms — book pressure in crypto evaporates in 10-50ms
 fill_conservatism = 0.5          # Only fill 50% of best level size
 high_conviction_only = true
-exit_timeout_ms = 4000           # 4s hold (allow limit to fill)
-take_profit_bps = 17.0
+exit_timeout_ms = 2200           # 2.2s hold (optimal for 50bps)
+take_profit_bps = 15.0
 
 [strategy.symbol_timeouts]
-default = 4000
-ADA = 3000
-SOL = 3000
-ZEC = 3000
-LINK = 4000
-XMR = 5000
-SUI = 5000
-PUMP = 4000
-WIF = 4000
+default = 2200
+ADA = 1800
+SOL = 1800
+ZEC = 2000
+LINK = 2200
+XMR = 3000
+SUI = 3000
+PUMP = 2500
+WIF = 2500
 
 # --- Risk Management ---
 
