@@ -1,8 +1,8 @@
-# OMS Module — Order Management System (v0.1.3)
+# OMS Module — Order Management System (v0.3.0)
 
 ## Objective
-Validate trade signals against risk limits, track positions, and execute orders. Implements position cap, side-aware cooldown, and conservative fill model.
-Validate trade signals against risk limits, manage a passive market-making lifecycle, and automate exits. Implements `Post-Only` entries, automated Take-Profit limit orders, and tiered symbol-specific time exits.
+Validate trade signals against risk limits, track positions, and execute orders. Implements position cap, side-aware cooldown, and **liquidity-aware sizing**.
+Validate trade signals against risk limits, manage a passive market-making lifecycle, and automate exits. Implements `Post-Only` entries, automated Take-Profit limit orders, tiered symbol-specific time exits, and **order book depth capping**.
 
 ## Invariants
 
@@ -16,6 +16,7 @@ Validate trade signals against risk limits, manage a passive market-making lifec
 8. **Maker Priority**: Entries MUST be `Post-Only`. Rejects if matching engine would cross the spread.
 9. **TP Coupling (Partial fill aware)**: Every entry fill MUST trigger a secondary Take-Profit limit order sized exactly to `fill.filled_size`.
 10. **Reduce-Only Enforcement**: All TP and Time-Exit orders are flagged as `reduce_only` to prevent accidental position reversal.
+11. **Liquidity Capping**: Orders are dynamically capped based on the available depth at the best level of the target venue. `filled_size = min(mag_size, best_level_size * fill_conservatism)`.
 
 ## Order Flow (v0.2.0 — Maker Mode)
 

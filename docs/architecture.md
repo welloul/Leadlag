@@ -1,21 +1,21 @@
 
-## System Overview (v0.2.0 — MAKER ONLY)
+## System Overview (v0.3.0 — HFT OPTIMIZED)
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────────┐
-│                           TokioParasite v0.2.0                                  │
-│                     Lead-Lag Arbitrage Engine (MAKER ONLY)                      │
+│                           TokioParasite v0.3.0                                  │
+│                     Lead-Lag Arbitrage Engine (HFT OPTIMIZED)                   │
 ├─────────────────────────────────────────────────────────────────────────────────┤
 │                                                                                 │
 │  ┌─────────────────────────────────────────────────────────────────────────┐   │
 │  │                        ASYNC I/O ZONE                                    │   │
-│  │  ┌───────────────────┐    ┌───────────────────┐                         │   │
-│  │  │ Binance WS        │    │ Hyperliquid WS    │                         │   │
-│  │  │ @trade + @depth   │    │ trades + l2Book   │                         │   │
-│  │  └─────┬──────┬──────┘    └─────┬──────┬──────┘                         │   │
-│  │        │ Tick  │ Book           │ Tick  │ Book                          │   │
-│  │        ▼       ▼                ▼       ▼                               │   │
-│  │  crossbeam::bounded(1024)    crossbeam::bounded(1024)                  │   │
+│  │  ┌───────────────────────────┐    ┌───────────────────────────────────┐  │   │
+│  │  │ Binance WS (TCP_NODELAY)  │    │ Hyperliquid WS (TCP_NODELAY)      │  │   │
+│  │  │ @trade + @depth           │    │ trades + l2Book                   │  │   │
+│  │  └─────┬──────┬──────────────┘    └─────┬──────┬──────────────────────┘  │   │
+│  │        │ Tick  │ Book                   │ Tick  │ Book                   │   │
+│  │        ▼       ▼                        ▼       ▼                        │   │
+│  │  crossbeam::bounded(1024)            crossbeam::bounded(1024)            │   │
 │  └─────────────────────────────────────────────────────────────────────────┘   │
 │                    │           │           │           │                        │
 │                    ▼           ▼           ▼           ▼                        │
@@ -31,7 +31,7 @@
 │  ┌─────────────────────────────────────────────────────────────────────────┐   │
 │  │                   ACTIVE EVENT LOOP (Selected by Config)                │   │
 │  │                                                                          │   │
-│  │  ┌───────────────── ENTRY LOGIC (v0.2.0 MAKER) ─────────────────────────┐  │   │
+│  │  ┌───────────────── ENTRY LOGIC (v0.3.0 MAKER) ─────────────────────────┐  │   │
 │  │  │                                                                    │  │   │
 │  │  │  Impulse + OBI Convergence ──▶ CALC MID PRICE ──▶ POST-ONLY LIMIT  │  │   │
 │  │  │                                                                    │  │   │
@@ -40,9 +40,9 @@
 │  │  │  ALPHA DECAY TIMEOUT ──▶ REDUCE-ONLY EXIT (IOC)                    │  │   │
 │  │  └────────────────────────────────────────────────────────────────────┘  │   │
 │  │                                                                          │   │
-│  │  OMS GATES (v0.2.0):                                                     │   │
+│  │  OMS GATES (v0.3.0):                                                     │   │
 │  │  ├─ Cooldown: 200ms per (symbol, side)                                   │   │
-│  │  ├─ Position cap: DYNAMIC (Filled + Pending)                             │   │
+│  │  ├─ Liquidity: Cap at level_size * fill_conservatism                     │   │
 │  │  ├─ Maker check: Mid-price calculation + Post-Only tag                   │   │
 │  │  ├─ Reduce-Only: Safe position reduction for TP/Exits                    │   │
 │  │  ├─ Take-Profit: Auto-submit at +13 bps upon entry fill                  │   │

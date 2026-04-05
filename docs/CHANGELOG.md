@@ -1,4 +1,31 @@
-## [0.2.0] — 2026-03-31 — Passive Market Making & Alpha Decay
+## [0.3.1] — 2026-04-05 — Take-Profit & Fill Notification Fix
+1: 
+2: ### Fixes & Logic (The "Blindness" Patch)
+3: - **PaperSimulator Synchronous Broadcast** — Fixed bug where IOC/Market orders bypassed the fill notification channel. OMS and Runners now correctly see all simulator fills.
+4: - **Automated Take-Profit Restoration** — Restored immediate TP limit order generation on both paper and live runners.
+5: - **Position State Synchronization** — OMS `NetDelta` now reflects filled positions in real-time, preventing state desync and incorrect position-cap rejections.
+6: 
+7: ---
+8: 
+9: ## [0.3.0] — 2026-04-05 — HFT Network Optimization & Multi-Runner Architecture
+1: 
+2: ### Performance & Network (The "Low-Latency" Push)
+3: - **TCP_NODELAY Enforcement** — Mandatory for HFT. Disabled Nagle's Algorithm across all exchange connections (Binance, Hyperliquid) to eliminate 10–40ms of packet buffering latency.
+4: - **Manual Handshake Optimization** — Substituted `tokio_tungstenite::connect_async` with manual `TcpStream` + `set_nodelay(true)` + `tokio_native_tls` for direct socket control.
+5: - **Latency-Optimized REST Client** — Enabled `tcp_nodelay(true)` on `reqwest` clients to ensure authenticated order execution isn't delayed by Nagle.
+6: 
+7: ### Execution & Risk (Liquidity Management)
+8: - **Liquidity-Aware Position Sizing** — OMS now caps order sizes to `best_level_size * fill_conservatism` (e.g., 50% of top-of-book). Prevents immediate price impact and slippage.
+9: - **Consistent Symbol Normalization** — Unified normalization across `PaperSimulator`, `SignalPipeline`, and `OrderManagementSystem` to ensure perfect cross-venue ticker matching.
+10: - **Minimum Notional Stability** — Enforced $10.1 USD minimum notional locally to satisfy Hyperliquid's exchange limits.
+11: 
+12: ### System Architecture (Maintenance)
+13: - **Isolated Runner Model** — Split `runners::live` and `runners::paper` into distinct modules. Simplifies paper trading simulation vs real capital execution.
+14: - **AWS Production Proofing** — Bot validated on Amazon Linux (graviton/x86). Verified cloud performance and connectivity stability.
+15: 
+16: ---
+17: 
+18: ## [0.2.0] — 2026-03-31 — Passive Market Making & Alpha Decay
 
 ### Execution Model (The "Maker" Shift)
 - **Passive Limit Lifecycle** — Transitions from liquidity-taking (Market/IOC) to **Post-Only Limit** entries at mid-price.

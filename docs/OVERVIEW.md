@@ -1,4 +1,4 @@
-# Lead-Lag Strategy Overview
+# Lead-Lag Strategy Overview (v0.3.0)
 
 ## Mathematical Foundation
 
@@ -99,6 +99,19 @@ min_correlation_r = 0.85    # Minimum R to generate signal
 hysteresis_buffer = 0.10    # Margin to consider a flip
 window_size_ticks = 256     # Ring buffer size (must be power of 2)
 ```
+
+## HFT Network Optimization (v0.3.0)
+
+### Nagle's Algorithm (TCP_NODELAY)
+The engine now explicitly disables Nagle's Algorithm for all exchange connections. This ensures that every tick and order packet is sent immediately, bypassing the kernel's default 10–40ms buffering delay. This is critical for capturing the tight alpha windows (~500ms) identified in v0.2.0.
+
+### Liquidity-Aware Sizing
+To prevent immediate market impact and "self-alpha-decay," the OMS now queries the target venue's book depth before submission. Order sizes are dynamically capped:
+```
+notional_cap = best_level_size * fill_conservatism
+target_size = min(signal_size, notional_cap)
+```
+This ensures orders are likely to be filled at the intended mid-price without moving the market against the bot.
 
 ## Passive Market-Making Logic (v0.2.0)
 

@@ -1,4 +1,4 @@
-# Simulator Module — Paper Trading (v0.1.3)
+# Simulator Module — Paper Trading (v0.3.0)
 
 ## Objective
 Simulate realistic exchange behavior for paper trading. Maintains separate order books per `(Symbol, VenueId)` pair with per-venue spread models, conservative fill model, and staleness tracking.

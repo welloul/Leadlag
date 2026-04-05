@@ -15,6 +15,8 @@
 | H9 | Impulse spike artifacts (382k bps) | ✅ Resolved — warmup + sanity |
 | H10 | `other_is_lagging = true` hardcoded | ✅ Resolved — restored delta check |
 | H11 | Exchange timestamps unreliable across venues | ✅ Resolved — local timestamps for freshness |
+| H12 | Nagle's Algorithm (TCP_NODELAY) enabled | ✅ Resolved — 10-40ms latency reduction |
+| H13 | Latency-optimized REST client | ✅ Resolved — `tcp_nodelay(true)` on `reqwest` |
 
 ## OMS
 
@@ -31,6 +33,8 @@
 | O9 | No book consumption model | ✅ Resolved — 50% of best level |
 | O10 | Taker fee drag (entry fee > edge) | ✅ Resolved — Shift to Post-Only Maker |
 | O11 | Manual exit management (laggard) | ✅ Resolved — Auto-TP + Tiered symbol timeouts |
+| O12 | No liquidity-aware sizing | ✅ Resolved — `fill_conservatism` cap on top of book |
+| O13 | Take-Profit logic broken (Blindness) | ✅ Resolved — fixed fill-channel broadcast |
 
 ## Simulator
 
@@ -43,6 +47,8 @@
 | S5 | No other-venue book seeding | ✅ Resolved — removed fake seeding |
 | S6 | No conservative fill model | ✅ Resolved — 50% of best level |
 | S7 | No best_bid_size/best_ask_size | ✅ Resolved |
+| S8 | Symbol normalization mismatch in simulator | ✅ Resolved — unified `normalize()` across all modules |
+| S9 | IOC fill-channel bypass | ✅ Resolved — broadcast all fills to `fill_tx` |
 
 ## Signal Processing
 
@@ -69,6 +75,7 @@
 | I9 | Binance diff stream gap re-sync | ⚠️ Deferred |
 | I10 | No per-symbol performance tracking | ✅ Resolved — heartbeat |
 | I11 | Static configuration (restart required) | ✅ Resolved — 15s Hot-Reload heartbeat |
+| I12 | Multi-runner architecture (Live vs Paper) | ✅ Resolved — isolated modules for cleaner logic |
 
 ## Known Technical Debt
 

@@ -1,4 +1,4 @@
-# Runners Module — Execution Orchestration
+# Runners Module — Execution Orchestration (v0.3.0)
 
 ## Objective
 Decouple simulated/paper trading from live execution to prevent logic bleed and ensure safety. The `runners` module provides isolated event loops for different execution environments.

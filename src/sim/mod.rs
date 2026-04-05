@@ -319,6 +319,12 @@ impl PaperSimulator {
         };
 
         self.fill_history.lock().unwrap().push(fill.clone());
+        
+        // Broadcast fill for TP logic/Runner
+        if let Some(ref tx) = *self.fill_tx.lock().unwrap() {
+            let _ = tx.send(fill.clone());
+        }
+
         Ok(fill)
     }
 
