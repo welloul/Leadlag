@@ -45,7 +45,7 @@ enable_obi = true
 obi_weight = 0.3
 
 # Impulse-OBI settings
-impulse_threshold_bps = 20.0       # captures higher conviction moves (+ taker fee)
+impulse_threshold_bps = 30.0       # captures higher conviction moves (+ taker fee)
 lag_threshold_bps = 1.0          # Lowered: tighter lag gate — 1 bps divergence is enough
 impulse_window_ms = 5            # Lookback window (unchanged)
 signal_timeout_ms = 250          # Combo window raised (was 150ms) — wider window catches more OBI+impulse pairs
@@ -59,7 +59,7 @@ obi_depth = 5
 obi_spike_threshold = 0.20       # More sensitive
 # Entry logic
 venue_freshness_ms = 400
-entry_threshold_bps = 30.0
+entry_threshold_bps = 35.0
 cooldown_ms = 15
 max_levels_consumed = 5          # Be more aggressive on the breakthrough
 obi_persist_ms = 30              # CRITICAL: was 200ms — book pressure in crypto evaporates in 10-50ms
