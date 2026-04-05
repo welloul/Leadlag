@@ -159,7 +159,8 @@ impl<const N: usize> SignalPipeline<N> {
     /// Process tick for impulse-obi strategy.
     /// Routes to the engine for the tick's symbol — fully isolated per symbol.
     pub fn process_tick(&mut self, tick: &Tick) -> Option<TradeSignal> {
-        if let Some(engine) = self.impulse_obi_engines.get_mut(&tick.symbol) {
+        let norm_sym = tick.symbol.normalize();
+        if let Some(engine) = self.impulse_obi_engines.get_mut(&norm_sym) {
             if let Some(signal) = engine.process_tick(tick) {
                 // Encode impulse magnitude as a normalised strength factor in correlation_r.
                 // The OMS uses this to scale position size (0.5–2.0× base).
@@ -186,7 +187,8 @@ impl<const N: usize> SignalPipeline<N> {
     /// Process book update for impulse-obi strategy (OBI path).
     /// Routes to the engine for the book's symbol — fully isolated per symbol.
     pub fn process_book(&mut self, book: &BookUpdate) -> Option<TradeSignal> {
-        if let Some(engine) = self.impulse_obi_engines.get_mut(&book.symbol) {
+        let norm_sym = book.symbol.normalize();
+        if let Some(engine) = self.impulse_obi_engines.get_mut(&norm_sym) {
             if let Some(signal) = engine.process_book(book) {
                 return Some(TradeSignal {
                     side: signal.side,
@@ -208,7 +210,8 @@ impl<const N: usize> SignalPipeline<N> {
     /// Feed book midprice into ImpulseDetector — more reliable than trade price.
     /// Routes to the engine for the book's symbol — fully isolated per symbol.
     pub fn process_book_for_impulse(&mut self, book: &BookUpdate) -> Option<TradeSignal> {
-        if let Some(engine) = self.impulse_obi_engines.get_mut(&book.symbol) {
+        let norm_sym = book.symbol.normalize();
+        if let Some(engine) = self.impulse_obi_engines.get_mut(&norm_sym) {
             if let Some(impulse) = engine.impulse_detector.process_book(book) {
                 // Cross-venue edge check: ensure the target is actually lagging 
                 // by at least entry_threshold_bps before we fire.
