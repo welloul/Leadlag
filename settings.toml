@@ -65,19 +65,19 @@ max_levels_consumed = 5          # Be more aggressive on the breakthrough
 obi_persist_ms = 30              # CRITICAL: was 200ms — book pressure in crypto evaporates in 10-50ms
 fill_conservatism = 0.5          # Only fill 50% of best level size
 high_conviction_only = true
-exit_timeout_ms = 1500           # 1.5s hold (allow limit to fill)
-take_profit_bps = 10.0
+exit_timeout_ms = 4000           # 4s hold (allow limit to fill)
+take_profit_bps = 17.0
 
 [strategy.symbol_timeouts]
-default = 1500
-ADA = 1000
-SOL = 1000
-ZEC = 1000
-LINK = 1500
-XMR = 2500
-SUI = 2500
-PUMP = 1500
-WIF = 1500
+default = 4000
+ADA = 3000
+SOL = 3000
+ZEC = 3000
+LINK = 4000
+XMR = 5000
+SUI = 5000
+PUMP = 4000
+WIF = 4000
 
 # --- Risk Management ---
 
