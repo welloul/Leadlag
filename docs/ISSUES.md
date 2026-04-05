@@ -35,6 +35,8 @@
 | O11 | Manual exit management (laggard) | ✅ Resolved — Auto-TP + Tiered symbol timeouts |
 | O12 | No liquidity-aware sizing | ✅ Resolved — `fill_conservatism` cap on top of book |
 | O13 | Take-Profit logic broken (Blindness) | ✅ Resolved — fixed fill-channel broadcast |
+| O14 | Symbol Desync (Binance vs HL) | ✅ Resolved — Canonical normalization |
+| O15 | Infinite Take-Profit Recursion | ✅ Resolved — OrderPurpose intent-masking |
 
 ## Simulator
 

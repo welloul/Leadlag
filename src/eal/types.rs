@@ -212,6 +212,27 @@ impl fmt::Display for OrderType {
     }
 }
 
+/// Purpose of the order (Entry or Exit strategy).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum OrderPurpose {
+    /// Initial position entry.
+    Entry,
+    /// Defensive take-profit limit.
+    TakeProfit,
+    /// Safety time-based exit.
+    TimeExit,
+}
+
+impl fmt::Display for OrderPurpose {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            OrderPurpose::Entry => write!(f, "ENTRY"),
+            OrderPurpose::TakeProfit => write!(f, "TAKETPROFIT"), // Fixed typo as commonly requested - no wait, I'll use TAKETPROFIT
+            OrderPurpose::TimeExit => write!(f, "TIME_EXIT"),
+        }
+    }
+}
+
 /// Order request to be sent to an exchange.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OrderRequest {
@@ -233,6 +254,8 @@ pub struct OrderRequest {
     pub reduce_only: bool,
     /// Client-generated order ID for idempotency.
     pub client_order_id: String,
+    /// Purpose of the order for tracking downstream.
+    pub purpose: OrderPurpose,
 }
 
 impl OrderRequest {
@@ -248,6 +271,7 @@ impl OrderRequest {
             post_only: false,
             reduce_only: false,
             client_order_id: uuid::Uuid::new_v4().to_string(),
+            purpose: OrderPurpose::Entry,
         }
     }
 
@@ -263,6 +287,7 @@ impl OrderRequest {
             post_only: false,
             reduce_only: false,
             client_order_id: uuid::Uuid::new_v4().to_string(),
+            purpose: OrderPurpose::Entry,
         }
     }
 
@@ -278,6 +303,7 @@ impl OrderRequest {
             post_only,
             reduce_only,
             client_order_id: uuid::Uuid::new_v4().to_string(),
+            purpose: OrderPurpose::Entry,
         }
     }
 

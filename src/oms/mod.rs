@@ -9,7 +9,7 @@ pub use preflight::PreflightChecker;
 
 use crate::config::{RiskSettings, StrategySettings};
 use crate::eal::{
-    FillEvent, OrderAck, OrderExecution, OrderRequest, OrderSide, Position,
+    FillEvent, OrderAck, OrderExecution, OrderPurpose, OrderRequest, OrderSide, Position,
     RiskError, Symbol, TradeSignal, VenueId,
 };
 use std::collections::HashMap;
@@ -413,6 +413,7 @@ impl OrderManagementSystem {
                 post_only: false,
                 reduce_only: false,
                 client_order_id: format!("0x{:032x}", uuid::Uuid::new_v4().as_u128()),
+                purpose: OrderPurpose::Entry,
              }
         } else {
             OrderRequest {
@@ -425,6 +426,7 @@ impl OrderManagementSystem {
                 post_only: false,
                 reduce_only: true, // Auto-reduce on non-impulse exits
                 client_order_id: format!("0x{:032x}", uuid::Uuid::new_v4().as_u128()),
+                purpose: if signal.correlation_r == 0.0 { OrderPurpose::TakeProfit } else { OrderPurpose::Entry },
             }
         };
 
@@ -472,14 +474,21 @@ impl OrderManagementSystem {
         // Store open timestamp for time-based exit (start the clock on FILL, not signal)
         // Handled directly by net_delta stamping `timestamp_ns`
         
+        
         let current_size = self.net_delta.position_size(fill.venue, &fill.symbol);
         
-        let is_entry = (current_size > 0.0 && fill.side == OrderSide::Buy)
-            || (current_size < 0.0 && fill.side == OrderSide::Sell);
-        
-        // If we filled a BUY, we want to SELL at entry + profit bps
-        // If we filled a SELL, we want to BUY at entry - profit bps
-        if is_entry && self.strategy_settings.active_strategy == "impulse_obi" {
+        // CRITICAL BUG FIX (v0.3.2): Only generate TP if the fill was an ENTRY.
+        // This prevents the infinite TakeProfit -> Entry -> TakeProfit recursion loop.
+        let order_was_entry = if let Some((pending, _)) = self.pending_orders.get(&fill.client_order_id) {
+            pending.purpose == OrderPurpose::Entry
+        } else {
+            // If order was already removed (partial fill final or edge case), 
+            // assume ENTRY if it matches impulse strategy direction logic.
+            // But we prefer explicit tracking.
+            false 
+        };
+
+        if order_was_entry && self.strategy_settings.active_strategy == "impulse_obi" {
             let tp_bps = self.strategy_settings.take_profit_bps; 
             let tp_price = if current_size > 0.0 {
                 fill.avg_price * (1.0 + (tp_bps / 10000.0))
@@ -621,6 +630,7 @@ impl OrderManagementSystem {
             post_only: false,
             reduce_only: true,
             client_order_id: format!("0x{:032x}", uuid::Uuid::new_v4().as_u128()),
+            purpose: OrderPurpose::TimeExit,
         };
 
         match executor.submit_order(&order).await {

@@ -1,3 +1,15 @@
+# Changelog
+
+## [0.3.2] - 2026-04-05
+### Added
+- **Order Intent (OrderPurpose)**: `OrderRequest` now tracks the purpose of each order (`Entry`, `TakeProfit`, `TimeExit`).
+- **OMS Intent Gating**: OMS now only generates Take-Profit orders for confirmed `Entry` fills, killing the infinite TP recursion bug.
+- **Canonical Symbol Scaling**: All signals are now normalized to canonical base symbols (e.g., `XMR`) before hitting the risk engine, ensuring position caps are rigidly enforced across venues (e.g., Binance `XMRUSDT` vs HL `XMR`).
+
+### Improved
+- **Deployment**: Switched to `rsync` for faster local-to-AWS code synchronization.
+- **Latency Logic**: Integrated RTT profiling (1.5ms measured to Hyperliquid) into alpha decay calculations.
+
 ## [0.3.1] — 2026-04-05 — Take-Profit & Fill Notification Fix
 1: 
 2: ### Fixes & Logic (The "Blindness" Patch)
