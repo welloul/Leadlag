@@ -1,5 +1,9 @@
 # Changelog
 
+## [0.3.3] - 2026-04-05
+### Fixed
+- **The "Shadow Symbol" Leak**: Implemented global symbol normalization in `NetDelta::update_position` and all lookup methods (`position_notional`, `position_size`, `net_delta`). This prevents venues from bypassing position caps by using non-canonical names (e.g., `ZECUSDT` vs `ZEC`).
+
 ## [0.3.2] - 2026-04-05
 ### Added
 - **Order Intent (OrderPurpose)**: `OrderRequest` now tracks the purpose of each order (`Entry`, `TakeProfit`, `TimeExit`).

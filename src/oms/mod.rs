@@ -78,12 +78,13 @@ impl NetDelta {
     /// Update position after a fill.
     pub fn update_position(&mut self, fill: &FillEvent) {
         let venue_idx = fill.venue.0 as usize;
-        let symbol_idx = self.get_symbol_index(&fill.symbol);
+        let canon_sym = fill.symbol.normalize(); // FIX v0.3.3: ALWAYS NORMALIZE
+        let symbol_idx = self.get_symbol_index(&canon_sym);
         
         // Get or create position
         let position = self.positions[venue_idx][symbol_idx].get_or_insert_with(|| Position {
             venue: fill.venue,
-            symbol: fill.symbol.clone(),
+            symbol: canon_sym.clone(),
             size: 0.0,
             entry_price: 0.0,
             unrealized_pnl: 0.0,
@@ -126,9 +127,10 @@ impl NetDelta {
     /// Get net delta for a symbol across all venues.
     pub fn net_delta(&self, symbol: &Symbol) -> f64 {
         let mut total = 0.0;
+        let canon_sym = symbol.normalize(); // FIX v0.3.3
         for venue_positions in &self.positions {
             for pos in venue_positions.iter().flatten() {
-                if pos.symbol == *symbol {
+                if pos.symbol == canon_sym {
                     total += pos.size;
                 }
             }
@@ -140,8 +142,9 @@ impl NetDelta {
     /// Returns 0.0 if no position exists.
     pub fn position_notional(&self, venue: VenueId, symbol: &Symbol) -> f64 {
         let venue_idx = venue.0 as usize;
+        let canon_sym = symbol.normalize(); // FIX v0.3.3
         for (sym, idx) in &self.symbol_indices {
-            if sym == symbol {
+            if *sym == canon_sym {
                 if let Some(ref pos) = self.positions[venue_idx][*idx] {
                     return pos.size.abs() * pos.entry_price;
                 }
@@ -154,8 +157,9 @@ impl NetDelta {
     /// Positive = LONG, Negative = SHORT, 0.0 = flat.
     pub fn position_size(&self, venue: VenueId, symbol: &Symbol) -> f64 {
         let venue_idx = venue.0 as usize;
+        let canon_sym = symbol.normalize(); // FIX v0.3.3
         for (sym, idx) in &self.symbol_indices {
-            if sym == symbol {
+            if *sym == canon_sym {
                 if let Some(ref pos) = self.positions[venue_idx][*idx] {
                     return pos.size;
                 }
