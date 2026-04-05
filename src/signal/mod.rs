@@ -171,7 +171,7 @@ impl<const N: usize> SignalPipeline<N> {
                 return Some(TradeSignal {
                     side: signal.side,
                     target_venue: signal.target_venue,
-                    symbol: signal.symbol,
+                    symbol: signal.symbol.normalize(),
                     correlation_r: strength,
                     lag_offset_ns: 0,
                     timestamp_ns: signal.timestamp_ns,
@@ -193,7 +193,7 @@ impl<const N: usize> SignalPipeline<N> {
                 return Some(TradeSignal {
                     side: signal.side,
                     target_venue: signal.target_venue,
-                    symbol: signal.symbol,
+                    symbol: signal.symbol.normalize(),
                     correlation_r: 0.0,
                     lag_offset_ns: 0,
                     timestamp_ns: signal.timestamp_ns,
