@@ -12,7 +12,7 @@ use crate::eal::{
     FillEvent, OrderAck, OrderExecution, OrderPurpose, OrderRequest, OrderSide, Position,
     RiskError, Symbol, TradeSignal, VenueId,
 };
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
@@ -225,6 +225,8 @@ pub struct OrderManagementSystem {
     pending_orders: HashMap<String, (OrderRequest, u64)>,
     /// Side-aware cooldown: last trade timestamp per (symbol, side)
     last_trade_per_symbol: HashMap<(String, OrderSide), u64>,
+    /// Symbols currently in the process of exiting (to prevent duplicate exit signals)
+    exiting_symbols: HashSet<(VenueId, String)>,
 }
 
 impl OrderManagementSystem {
@@ -239,6 +241,7 @@ impl OrderManagementSystem {
             preflight,
             pending_orders: HashMap::new(),
             last_trade_per_symbol: HashMap::new(),
+            exiting_symbols: HashSet::new(),
         }
     }
 
@@ -464,16 +467,22 @@ impl OrderManagementSystem {
         let sym_key = fill.symbol.0.clone();
         let _cap_key = (venue_key.clone(), sym_key.clone());
 
-        // Handle pending order decay for partial fills (Internal Ripple Effect B)
+        // Handle pending order decay for partial fills
         if let Some((pending, _)) = self.pending_orders.get_mut(&fill.client_order_id) {
             pending.size -= fill.filled_size;
             if pending.size <= 0.000001 {
                 self.pending_orders.remove(&fill.client_order_id);
             }
         }
-
+        
         // Update net delta
         self.net_delta.update_position(fill);
+        
+        // v0.3.5 Fix: Only remove exit lock if we are truly flat to prevent race conditions
+        let current_size = self.net_delta.position_size(fill.venue, &fill.symbol);
+        if current_size.abs() < 1e-6 {
+            self.exiting_symbols.remove(&(fill.venue, fill.symbol.normalize().0.clone()));
+        }
 
         // Store open timestamp for time-based exit (start the clock on FILL, not signal)
         // Handled directly by net_delta stamping `timestamp_ns`
@@ -506,7 +515,7 @@ impl OrderManagementSystem {
                 fill.venue,
                 fill.symbol.clone(),
                 exit_side,
-                fill.filled_size,
+                fill.filled_size * 0.5, // SCALE FIX: 50% TP as requested
                 tp_price,
                 false, // Closing order shouldn't be post-only to ensure we exit at the profit target
                 true   // reduce_only
@@ -575,7 +584,9 @@ impl OrderManagementSystem {
                 .unwrap_or(self.strategy_settings.exit_timeout_ms);
                 
             let open_ts = pos.timestamp_ns;
-            if now > open_ts && (now - open_ts) > (timeout_ms * 1_000_000) {
+            let is_already_exiting = self.exiting_symbols.contains(&(pos.venue, pos.symbol.normalize().0.clone()));
+            
+            if now > open_ts && (now - open_ts) > (timeout_ms * 1_000_000) && !is_already_exiting {
                 let exit_side = if current_size > 0.0 { OrderSide::Sell } else { OrderSide::Buy };
                 let venue = pos.venue;
 
@@ -639,22 +650,8 @@ impl OrderManagementSystem {
 
         match executor.submit_order(&order).await {
             Ok(ack) => {
-                // Optimistically clear position from OMS immediately.
-                // If the IOC misses (partial fill or rejection), the WS fill event
-                // will reconcile — but in 99% of cases this prevents repeated exit spamming.
-                let zero_fill = crate::eal::FillEvent {
-                    order_id: crate::eal::OrderId(0),
-                    client_order_id: order.client_order_id.clone(),
-                    venue: signal.target_venue,
-                    symbol: signal.symbol.clone(),
-                    side: signal.side,
-                    filled_size: exit_size, // Mark full size as cleared
-                    avg_price: _current_price,
-                    fee: 0.0,
-                    fee_currency: "USDC".to_string(),
-                    timestamp_ns: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos() as u64,
-                };
-                self.net_delta.update_position(&zero_fill);
+                // Register the symbol as "Exiting" to block duplicate signals
+                self.exiting_symbols.insert((signal.target_venue, signal.symbol.normalize().0.clone()));
                 Ok(ack)
             }
             Err(e) => Err(RiskError::ExecutionFailed(e.to_string())),

@@ -66,7 +66,7 @@ obi_persist_ms = 30              # CRITICAL: was 200ms — book pressure in cryp
 fill_conservatism = 0.5          # Only fill 50% of best level size
 high_conviction_only = true
 exit_timeout_ms = 2200           # 2.2s hold (optimal for 50bps)
-take_profit_bps = 15.0
+take_profit_bps = 8.0
 
 [strategy.symbol_timeouts]
 default = 2200

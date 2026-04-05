@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.3.4] - 2026-04-05
+### Fixed
+- **The "Ghost Fill" Recursion**: Found and killed a race condition where optimistic position clearing in `process_exit_signal` caused fills to be double-counted.
+- **Exit Locking**: Added `exiting_symbols` gating to ensure a position only fires ONE exit sequence at a time, preventing terminal spam and fee drain.
+
 ## [0.3.3] - 2026-04-05
 ### Fixed
 - **The "Shadow Symbol" Leak**: Implemented global symbol normalization in `NetDelta::update_position` and all lookup methods (`position_notional`, `position_size`, `net_delta`). This prevents venues from bypassing position caps by using non-canonical names (e.g., `ZECUSDT` vs `ZEC`).
