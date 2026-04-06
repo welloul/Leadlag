@@ -13,7 +13,7 @@ use crate::signal;
 use crate::sim;
 
 use crate::config::Settings;
-use crate::eal::{BinanceExchange, HyperliquidExchange, MarketData, VenueId, OrderExecution};
+use crate::eal::{BinanceExchange, MexcExchange, MarketData, VenueId, OrderExecution, MexcLiveExecutor};
 use crate::oms::OrderManagementSystem;
 use crate::persist::{StateStore, TelemetryWriter};
 use crate::signal::{SignalPipeline, TimeGrid};
@@ -27,7 +27,7 @@ pub async fn run(settings: Settings) -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting TokioParasite Lead-Lag Bot");
     info!("Log level: {}", settings.app.log_level);
     info!("Active strategy: {}", settings.strategy.active_strategy);
-    info!("Paper trading: {}", settings.simulation.enabled);
+    info!("Trading mode: {:?}", settings.app.trading_mode);
     info!("CPU pinning: {}", settings.app.cpu_pinning);
 
     // Initialize storage
@@ -47,6 +47,12 @@ pub async fn run(settings: Settings) -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Kill switches initialized");
 
+    // Initialize MEXC Live Executor for OMS
+    let executor = Arc::new(MexcLiveExecutor::new(
+        settings.venues.exchange_b.api_key.clone(),
+        settings.venues.exchange_b.api_secret.clone(),
+    ));
+
     // Initialize signal pipeline
     let mut pipeline = SignalPipeline::<256>::new(settings.strategy.clone());
     pipeline.set_precision(settings.app.tick_precision_ns);
@@ -58,9 +64,9 @@ pub async fn run(settings: Settings) -> Result<(), Box<dyn std::error::Error>> {
     // Initialize exchanges based on configuration
     let (exchange_a, exchange_b): (Box<dyn MarketData>, Box<dyn MarketData>) = (
                 Box::new(BinanceExchange::new()),
-                Box::new(HyperliquidExchange::new()),
+                Box::new(MexcExchange::new()),
     );
-    info!("Using real market data feeds (Binance, Hyperliquid)");
+    info!("Using real market data feeds (Binance, Mexc)");
 
     // Subscribe to market data
     let symbols: Vec<eal::Symbol> = settings
@@ -144,6 +150,7 @@ pub async fn run(settings: Settings) -> Result<(), Box<dyn std::error::Error>> {
     info!("Entering main event loop...");
     
     let mut oms = OrderManagementSystem::new(settings.risk.clone(), settings.strategy.clone());
+    let mut pipeline = SignalPipeline::<256>::new(settings.strategy.clone());
 
     // Choose active executor for this session
     let executor: &dyn OrderExecution = &live_executor;

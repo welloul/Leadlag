@@ -8,12 +8,16 @@ mod hyperliquid;
 mod hyperliquid_exec;
 mod mock;
 mod types;
+mod okx;
+mod mexc;
 
 pub use binance::BinanceExchange;
 pub use hyperliquid::HyperliquidExchange;
 pub use hyperliquid_exec::HyperliquidLiveExecutor;
 pub use mock::MockExchange;
 pub use types::*;
+pub use okx::{OkxExchange, OkxLiveExecutor};
+pub use mexc::{MexcExchange, MexcLiveExecutor};
 
 use async_trait::async_trait;
 use std::sync::Arc;

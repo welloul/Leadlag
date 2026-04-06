@@ -26,9 +26,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let settings = Settings::load()?;
     init_logging(&settings.app.log_level);
 
-    if settings.simulation.enabled {
-        runners::paper::run(settings).await
-    } else {
-        runners::live::run(settings).await
+    use config::{TradingMode, TargetExchange};
+
+    match settings.app.trading_mode {
+        TradingMode::Paper => {
+            runners::paper::run(settings).await
+        }
+        TradingMode::Live => {
+            match settings.app.target_exchange {
+                TargetExchange::Hyperliquid => runners::hyperliquid::run(settings).await,
+                TargetExchange::Okx => runners::okx::run(settings).await,
+                TargetExchange::Mexc => runners::mexc::run(settings).await,
+            }
+        }
     }
 }

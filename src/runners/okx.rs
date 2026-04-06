@@ -13,7 +13,7 @@ use crate::signal;
 use crate::sim;
 
 use crate::config::Settings;
-use crate::eal::{BinanceExchange, HyperliquidExchange, MarketData, MockExchange, VenueId, OrderExecution};
+use crate::eal::{BinanceExchange, OkxExchange, MarketData, VenueId, OrderExecution, OkxLiveExecutor};
 use crate::oms::OrderManagementSystem;
 use crate::persist::{StateStore, TelemetryWriter};
 use crate::signal::{SignalPipeline, TimeGrid};
@@ -47,29 +47,18 @@ pub async fn run(settings: Settings) -> Result<(), Box<dyn std::error::Error>> {
 
     info!("Kill switches initialized");
 
-    // Initialize signal pipeline
-    let mut pipeline = SignalPipeline::<256>::new(settings.strategy.clone());
-    pipeline.set_precision(settings.app.tick_precision_ns);
-    info!(
-        "Signal pipeline initialized with {} symbols",
-        settings.strategy.symbols.len()
-    );
-
+    // Initialize OKX Live Executor for OMS
+    let executor = Arc::new(OkxLiveExecutor::new(
+        settings.venues.exchange_b.api_key.clone(),
+        settings.venues.exchange_b.api_secret.clone(),
+        None, // Okx passphrase placeholder
+    ));
     // Initialize exchanges based on configuration
-    let (exchange_a, exchange_b): (Box<dyn MarketData>, Box<dyn MarketData>) =
-        if settings.simulation.use_real_data {
-            info!("Using real market data feeds (Binance, Hyperliquid)");
-            (
+    let (exchange_a, exchange_b): (Box<dyn MarketData>, Box<dyn MarketData>) = (
                 Box::new(BinanceExchange::new()),
-                Box::new(HyperliquidExchange::new()),
-            )
-        } else {
-            info!("Using mock exchanges for paper trading");
-            (
-                Box::new(MockExchange::new(VenueId::EXCHANGE_A)),
-                Box::new(MockExchange::new(VenueId::EXCHANGE_B)),
-            )
-        };
+                Box::new(OkxExchange::new()),
+    );
+    info!("Using real market data feeds (Binance, Okx)");
 
     // Subscribe to market data
     let symbols: Vec<eal::Symbol> = settings
@@ -122,15 +111,51 @@ pub async fn run(settings: Settings) -> Result<(), Box<dyn std::error::Error>> {
     // Asynchronous fill channel for limit order notifications
     let (fill_tx, fill_rx) = crossbeam_channel::unbounded::<eal::FillEvent>();
 
-    // Initialize Paper Execution Engine
-    simulator.set_fill_tx(fill_tx.clone());
-    info!("Using PaperSimulator for execution");
+    // Initialize LIVE Execution Engine
+    let wallet_address = std::env::var("HL_API_KEY").unwrap_or_default();
+    let wallet_secret = std::env::var("HL_API_SECRET").unwrap_or_default();
+    let main_address = std::env::var("HL_MAIN_ADDRESS").ok();
+    
+    let exec = eal::HyperliquidLiveExecutor::new(VenueId::EXCHANGE_B, wallet_address, wallet_secret, main_address);
+    
+    // FATAL ABORT: We must sync the Meta State or L1 signatures crash instantly
+    if let Err(e) = exec.load_asset_context().await {
+        tracing::error!("Failed to fetch HL meta state! Exiting to preserve safety. Error: {}", e);
+        std::process::exit(1);
+    }
+
+    // Nuclear Cleanup FIRST: Cancel all stale orders for traded symbols
+    if let Err(e) = exec.cancel_all_open_orders(&settings.strategy.symbols).await {
+        tracing::warn!("Failed to cleanup stale orders: {}", e);
+    }
+
+    // Apply account-wide leverage settings
+    if let Err(e) = exec.sync_leverage(&settings.strategy.symbols, settings.risk.leverage as u32).await {
+        tracing::warn!("Failed to synchronize leverage settings: {}", e);
+    }
+    
+    exec.set_fill_tx(fill_tx.clone()).await;
+    info!("Using Hyperliquid LIVE Execution Engine! (CAUTION: REAL CAPITAL)");
+    let live_executor = exec;
+
+    // Main event loop
     info!("Entering main event loop...");
     
     let mut oms = OrderManagementSystem::new(settings.risk.clone(), settings.strategy.clone());
+    let mut pipeline = SignalPipeline::<256>::new(settings.strategy.clone());
 
     // Choose active executor for this session
-    let executor: &dyn OrderExecution = &simulator;
+    let executor: &dyn OrderExecution = &live_executor;
+
+    // Startup Position Sync
+    match executor.get_positions().await {
+        Ok(positions) => if !positions.is_empty() {
+             oms.seed_positions(positions);
+        }
+        Err(e) => {
+            warn!("COULD NOT SYNC POSITIONS FROM EXCHANGE: {}. State might be incomplete.", e);
+        }
+    }
 
     // Register kill switches manually for the OMS (pre-flight checks)
     oms.register_kill_switch(eal::VenueId::EXCHANGE_A, kill_switch_a.clone());
@@ -230,7 +255,7 @@ pub async fn run(settings: Settings) -> Result<(), Box<dyn std::error::Error>> {
                     let exec_price = simulator.get_mid_price(&signal.symbol, signal.target_venue)
                         .unwrap_or(tick.price);
                         
-                    let exec_tray: &dyn eal::OrderExecution = &simulator;
+                    let exec_tray: &dyn eal::OrderExecution = &live_executor;
                     
                     match oms.process_signal(&signal, exec_price, exec_tray).await {
                         Ok(ack) => {
@@ -613,7 +638,13 @@ pub async fn run(settings: Settings) -> Result<(), Box<dyn std::error::Error>> {
 
         // ── Position Exit & TTL check every 500ms ──────────────────────────────
         if last_exit_check.elapsed().as_millis() >= 500 {
-            // (Live executors process rejected CLOIDs here. The PaperSimulator does not need to evict real cloids)
+            // Drain HL-rejected CLOIDs — evict ghost pending orders immediately
+            if let Ok(mut rejected) = live_executor.rejected_cloids.lock() {
+                for cloid in rejected.drain(..) {
+                    oms.pending_orders_mut().remove(&cloid);
+                    tracing::warn!("GHOST EVICTED: HL rejected order {} removed from OMS pending", cloid);
+                }
+            }
 
             // Cancel orders whose TTL has lapsed
             oms.check_pending_ttl(executor).await;

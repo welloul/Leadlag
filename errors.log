@@ -1,0 +1,333 @@
+    Checking tokioparasite v0.1.0 (/Users/mehdi/Leadlag/tokioparasite)
+warning: unused import: `connect_async`
+  --> src/eal/binance.rs:12:25
+   |
+12 | use tokio_tungstenite::{connect_async, tungstenite...
+   |                         ^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `connect_async`
+  --> src/eal/hyperliquid.rs:12:25
+   |
+12 | use tokio_tungstenite::{connect_async, tungstenite...
+   |                         ^^^^^^^^^^^^^
+
+warning: unused imports: `Deserialize` and `Serialize`
+ --> src/eal/hyperliquid_exec.rs:8:13
+  |
+8 | use serde::{Deserialize, Serialize};
+  |             ^^^^^^^^^^^  ^^^^^^^^^
+
+warning: unused import: `Request`
+  --> src/eal/hyperliquid_exec.rs:20:103
+   |
+20 | ...Limit, Tif, Action, Request},
+   |                        ^^^^^^^
+
+warning: unused import: `ethers_core::types::Address`
+  --> src/eal/hyperliquid_exec.rs:22:5
+   |
+22 | use ethers_core::types::Address;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `connect_async`
+ --> src/eal/okx.rs:7:25
+  |
+7 | use tokio_tungstenite::{connect_async, tungstenite:...
+  |                         ^^^^^^^^^^^^^
+
+warning: unused import: `VenueId`
+ --> src/oms/preflight.rs:8:42
+  |
+8 | use crate::eal::{RiskError, TradeSignal, VenueId};
+  |                                          ^^^^^^^
+
+error[E0599]: no function or associated item named `new_from_slice` found for struct `Hmac<D>` in the current scope
+   --> src/eal/okx.rs:284:39
+    |
+284 | ...c::<Sha256>::new_from_slice(self.api_secret.as...
+    |                 ^^^^^^^^^^^^^^ function or associated item not found in `Hmac<Sha256>`
+    |
+    = help: items from traits can only be used if the trait is in scope
+help: trait `KeyInit` which provides `new_from_slice` is implemented but not in scope; perhaps you want to import it
+    |
+  1 + use hmac::KeyInit;
+    |
+
+error[E0609]: no field `is_buy` on type `&'life1 eal::types::OrderRequest`
+   --> src/eal/okx.rs:325:26
+    |
+325 | ...   side: if req.is_buy { "buy".to_string() } e...
+    |                    ^^^^^^ unknown field
+    |
+    = note: available fields are: `venue`, `symbol`, `side`, `order_type`, `size` ... and 5 others
+
+error[E0609]: no field `limit_price` on type `&'life1 eal::types::OrderRequest`
+   --> src/eal/okx.rs:326:29
+    |
+326 | ...e: if req.limit_price.is_some() { "limit".to_s...
+    |              ^^^^^^^^^^^ unknown field
+    |
+    = note: available fields are: `venue`, `symbol`, `side`, `order_type`, `size` ... and 5 others
+
+error[E0609]: no field `cloid` on type `&'life1 eal::types::OrderRequest`
+   --> src/eal/okx.rs:328:26
+    |
+328 |             clOrdId: req.cloid.clone(),
+    |                          ^^^^^ unknown field
+    |
+    = note: available fields are: `venue`, `symbol`, `side`, `order_type`, `size` ... and 5 others
+
+error[E0609]: no field `limit_price` on type `&'life1 eal::types::OrderRequest`
+   --> src/eal/okx.rs:329:21
+    |
+329 | ...   px: req.limit_price.map(|p| p.to_string()),
+    |               ^^^^^^^^^^^ unknown field
+    |
+    = note: available fields are: `venue`, `symbol`, `side`, `order_type`, `size` ... and 5 others
+
+error[E0282]: type annotations needed
+   --> src/eal/okx.rs:329:38
+    |
+329 | ...ap(|p| p.to_string()),
+    |        ^  - type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+329 |             px: req.limit_price.map(|p: /* Type */| p.to_string()),
+    |                                       ++++++++++++
+
+error[E0599]: no variant or associated item named `EncodeError` found for enum `eal::types::ExecutionError` in the current scope
+   --> src/eal/okx.rs:333:42
+    |
+333 | ...cutionError::EncodeError(e.to_string()))?;
+    |                 ^^^^^^^^^^^ variant or associated item not found in `eal::types::ExecutionError`
+    |
+   ::: src/eal/types.rs:472:1
+    |
+472 | pub enum ExecutionError {
+    | ----------------------- variant or associated item `EncodeError` not found for this enum
+
+error[E0599]: no variant or associated item named `NetworkError` found for enum `eal::types::ExecutionError` in the current scope
+   --> src/eal/okx.rs:342:42
+    |
+342 | ...cutionError::NetworkError(e.to_string()))?;
+    |                 ^^^^^^^^^^^^ variant or associated item not found in `eal::types::ExecutionError`
+    |
+   ::: src/eal/types.rs:472:1
+    |
+472 | pub enum ExecutionError {
+    | ----------------------- variant or associated item `NetworkError` not found for this enum
+
+error[E0282]: type annotations needed
+   --> src/eal/okx.rs:345:20
+    |
+345 | ...xt = resp.text().await.unwrap_or_default();
+    |         ^^^^^^^^^^^^^^^^^ cannot infer type
+
+error[E0599]: no variant or associated item named `ApiError` found for enum `eal::types::ExecutionError` in the current scope
+   --> src/eal/okx.rs:347:40
+    |
+347 | ...xecutionError::ApiError(format!("OKX HTTP {}: ...
+    |                   ^^^^^^^^ variant or associated item not found in `eal::types::ExecutionError`
+    |
+   ::: src/eal/types.rs:472:1
+    |
+472 | pub enum ExecutionError {
+    | ----------------------- variant or associated item `ApiError` not found for this enum
+
+error[E0599]: no variant or associated item named `ParseError` found for enum `eal::types::ExecutionError` in the current scope
+   --> src/eal/okx.rs:351:42
+    |
+351 | ...xecutionError::ParseError(e.to_string()))?;
+    |                   ^^^^^^^^^^ variant or associated item not found in `eal::types::ExecutionError`
+    |
+   ::: src/eal/types.rs:472:1
+    |
+472 | pub enum ExecutionError {
+    | ----------------------- variant or associated item `ParseError` not found for this enum
+
+error[E0599]: no variant or associated item named `ApiError` found for enum `eal::types::ExecutionError` in the current scope
+   --> src/eal/okx.rs:353:40
+    |
+353 | ...xecutionError::ApiError(format!("OKX Error {}:...
+    |                   ^^^^^^^^ variant or associated item not found in `eal::types::ExecutionError`
+    |
+   ::: src/eal/types.rs:472:1
+    |
+472 | pub enum ExecutionError {
+    | ----------------------- variant or associated item `ApiError` not found for this enum
+
+error[E0282]: type annotations needed
+   --> src/eal/okx.rs:357:24
+    |
+357 |             .and_then(|mut d| d.pop())
+    |                        ^^^^^  - type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+357 |             .and_then(|mut d: /* Type */| d.pop())
+    |                             ++++++++++++
+
+error[E0282]: type annotations needed
+   --> src/eal/okx.rs:358:24
+    |
+358 | ...    .and_then(|item| item.get("ordId").cloned())
+    |                   ^^^^  ---- type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+358 |             .and_then(|item: /* Type */| item.get("ordId").cloned())
+    |                            ++++++++++++
+
+error[E0282]: type annotations needed
+   --> src/eal/okx.rs:359:24
+    |
+359 | ...en(|v| v.as_str().map(|s| s.to_string()))
+    |        ^  - type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+359 |             .and_then(|v: /* Type */| v.as_str().map(|s| s.to_string()))
+    |                         ++++++++++++
+
+error[E0282]: type annotations needed
+   --> src/eal/okx.rs:359:43
+    |
+359 | ...ap(|s| s.to_string()))
+    |        ^  - type must be known at this point
+    |
+help: consider giving this closure parameter an explicit type
+    |
+359 |             .and_then(|v| v.as_str().map(|s: /* Type */| s.to_string()))
+    |                                            ++++++++++++
+
+error[E0560]: struct `eal::types::OrderAck` has no field named `cloid`
+   --> src/eal/okx.rs:366:13
+    |
+366 |             cloid: req.cloid.clone(),
+    |             ^^^^^ `eal::types::OrderAck` does not have this field
+    |
+    = note: available fields are: `client_order_id`, `venue`, `timestamp_ns`
+
+error[E0609]: no field `cloid` on type `&'life1 eal::types::OrderRequest`
+   --> src/eal/okx.rs:366:24
+    |
+366 |             cloid: req.cloid.clone(),
+    |                        ^^^^^ unknown field
+    |
+    = note: available fields are: `venue`, `symbol`, `side`, `order_type`, `size` ... and 5 others
+
+error[E0560]: struct `eal::types::OrderAck` has no field named `exchange_ts_ns`
+   --> src/eal/okx.rs:367:13
+    |
+367 |             exchange_ts_ns: Utc::now().timestamp_...
+    |             ^^^^^^^^^^^^^^ `eal::types::OrderAck` does not have this field
+    |
+    = note: available fields are: `client_order_id`, `venue`, `timestamp_ns`
+
+error[E0599]: no variant or associated item named `NetworkError` found for enum `eal::types::ExecutionError` in the current scope
+   --> src/eal/okx.rs:383:42
+    |
+383 | ...cutionError::NetworkError(e.to_string()))?;
+    |                 ^^^^^^^^^^^^ variant or associated item not found in `eal::types::ExecutionError`
+    |
+   ::: src/eal/types.rs:472:1
+    |
+472 | pub enum ExecutionError {
+    | ----------------------- variant or associated item `NetworkError` not found for this enum
+
+error[E0282]: type annotations needed
+   --> src/eal/okx.rs:386:20
+    |
+386 | ...xt = resp.text().await.unwrap_or_default();
+    |         ^^^^^^^^^^^^^^^^^ cannot infer type
+
+error[E0599]: no variant or associated item named `ApiError` found for enum `eal::types::ExecutionError` in the current scope
+   --> src/eal/okx.rs:388:40
+    |
+388 | ...xecutionError::ApiError(format!("OKX HTTP {}: ...
+    |                   ^^^^^^^^ variant or associated item not found in `eal::types::ExecutionError`
+    |
+   ::: src/eal/types.rs:472:1
+    |
+472 | pub enum ExecutionError {
+    | ----------------------- variant or associated item `ApiError` not found for this enum
+
+error[E0560]: struct `eal::types::AccountState` has no field named `margin_balance_usd`
+   --> src/eal/okx.rs:396:13
+    |
+396 |             margin_balance_usd: 0.0,
+    |             ^^^^^^^^^^^^^^^^^^ `eal::types::AccountState` does not have this field
+    |
+    = note: available fields are: `positions`, `total_unrealized_pnl`, `daily_realized_pnl`, `available_balance_usd`
+
+error[E0560]: struct `eal::types::AccountState` has no field named `maintenance_margin_usd`
+   --> src/eal/okx.rs:397:13
+    |
+397 |             maintenance_margin_usd: 0.0,
+    |             ^^^^^^^^^^^^^^^^^^^^^^ `eal::types::AccountState` does not have this field
+    |
+    = note: available fields are: `positions`, `total_unrealized_pnl`, `daily_realized_pnl`, `available_balance_usd`
+
+error[E0560]: struct `eal::types::AccountState` has no field named `available_margin_usd`
+   --> src/eal/okx.rs:398:13
+    |
+398 |             available_margin_usd: 0.0,
+    |             ^^^^^^^^^^^^^^^^^^^^ unknown field
+    |
+help: a field with a similar name exists
+    |
+398 -             available_margin_usd: 0.0,
+398 +             available_balance_usd: 0.0,
+    |
+
+warning: unused variable: `bids`
+   --> src/eal/binance.rs:169:13
+    |
+169 |         let bids: Vec<BookLevel> = self
+    |             ^^^^ help: if this is intentional, prefix it with an underscore: `_bids`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `client`
+   --> src/eal/hyperliquid_exec.rs:220:13
+    |
+220 |         let client = self.client.clone();
+    |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_client`
+
+warning: unused variable: `is_buyer_maker`
+   --> src/eal/okx.rs:155:29
+    |
+155 | ...         let is_buyer_maker = trade.side == "s...
+    |                 ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_is_buyer_maker`
+
+warning: unused variable: `symbol`
+  --> src/eal/mod.rs:67:43
+   |
+67 | ..._by_cloid(&self, symbol: &Symbol, cloid: &str) ...
+   |                     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_symbol`
+
+warning: unused variable: `cloid`
+  --> src/eal/mod.rs:67:60
+   |
+67 | ...symbol: &Symbol, cloid: &str) -> Result<(), Exe...
+   |                     ^^^^^ help: if this is intentional, prefix it with an underscore: `_cloid`
+
+warning: unused variable: `signal`
+   --> src/oms/preflight.rs:123:9
+    |
+123 |         signal: &TradeSignal,
+    |         ^^^^^^ help: if this is intentional, prefix it with an underscore: `_signal`
+
+warning: unused variable: `current_ns`
+   --> src/signal/impulse.rs:416:37
+    |
+416 | ...expired(&self, current_ns: u64) -> bool {
+    |                   ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_current_ns`
+
+Some errors have detailed explanations: E0282, E0560, E0599, E0609.
+For more information about an error, try `rustc --explain E0282`.
+warning: `tokioparasite` (lib) generated 14 warnings
+error: could not compile `tokioparasite` (lib) due to 25 previous errors; 14 warnings emitted

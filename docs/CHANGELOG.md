@@ -1,6 +1,32 @@
 # Changelog
 
-## [0.3.4] - 2026-04-05
+## [0.6.1] - 2026-04-06
+### Fixed
+- **OKX Symbol Format Bug (critical)**: OKX WS subscriptions now correctly use `LINK-USDT-SWAP` (perpetual swap instId) instead of bare `LINK`. Previously, OKX silently rejected subscriptions, resulting in zero data received from the lag venue and no signals generated.
+- **OKX Symbol Mismatch in Pipeline**: Ticks and books emitted by the OKX EAL are now tagged with the normalized bare symbol (e.g. `LINK`) instead of the raw OKX instId (`LINK-USDT-SWAP`). `Symbol::normalize()` does not handle the `-USDT-SWAP` suffix, so the engine lookup previously always failed silently.
+
+### Improved  
+- **OKX Book Channel**: Switched from `bbo-tbt` (1-level) to `books5` (5-level). Single-level BBO gives OBI no depth to work with; 5-level book enables the weighted divergence detector to function correctly.
+
+### Documentation
+- Updated `docs/modules/eal.md`, `docs/modules/runners.md`, `docs/modules/config.md` to reflect v0.6.1 and the multi-exchange architecture.
+
+## [0.6.0] - 2026-04-06
+### Added
+- **MEXC Integration**: Full support for MEXC Futures via WebSocket (Market Data) and REST (Order Execution).
+- **Venue-Agnostic EAL**: Unified the Exchange Abstraction Layer to allow seamless routing between Hyperliquid, OKX, and MEXC.
+- **Latency Optimization**: Guaranteed `TCP_NODELAY` on all MEXC sessions.
+
+## [0.5.0] - 2026-04-05
+### Added
+- **OKX Integration**: Full support for OKX V5 API (WebSocket trades/BBO and REST execution).
+- **Multi-Exchange Configuration**: Introduced `target_exchange` and `trading_mode` settings to replace binary simulation flags.
+- **Dedicated Runners**: Isolated execution event loops for each target venue (`okx.rs`, `mexc.rs`, `hyperliquid.rs`).
+
+## [0.4.0] - 2026-04-05
+### Changed
+- **Architectural Refactor**: Transitioned from a single-venue engine to a multi-exchange capable arbitrage system.
+- **Runner Decoupling**: Renamed `live.rs` to `hyperliquid.rs` and prepared scaffolding for concurrent exchange support.
 ### Fixed
 - **The "Ghost Fill" Recursion**: Found and killed a race condition where optimistic position clearing in `process_exit_signal` caused fills to be double-counted.
 - **Exit Locking**: Added `exiting_symbols` gating to ensure a position only fires ONE exit sequence at a time, preventing terminal spam and fee drain.

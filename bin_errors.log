@@ -1,0 +1,608 @@
+warning: unused import: `connect_async`
+  --> src/eal/binance.rs:12:25
+   |
+12 | use tokio_tungstenite::{connect_async, tungstenite...
+   |                         ^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `connect_async`
+  --> src/eal/hyperliquid.rs:12:25
+   |
+12 | use tokio_tungstenite::{connect_async, tungstenite...
+   |                         ^^^^^^^^^^^^^
+
+warning: unused imports: `Deserialize` and `Serialize`
+ --> src/eal/hyperliquid_exec.rs:8:13
+  |
+8 | use serde::{Deserialize, Serialize};
+  |             ^^^^^^^^^^^  ^^^^^^^^^
+
+warning: unused import: `Request`
+  --> src/eal/hyperliquid_exec.rs:20:103
+   |
+20 | ...Limit, Tif, Action, Request},
+   |                        ^^^^^^^
+
+warning: unused import: `ethers_core::types::Address`
+  --> src/eal/hyperliquid_exec.rs:22:5
+   |
+22 | use ethers_core::types::Address;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `connect_async`
+ --> src/eal/okx.rs:7:25
+  |
+7 | use tokio_tungstenite::{connect_async, tungstenite:...
+  |                         ^^^^^^^^^^^^^
+
+warning: unused import: `VenueId`
+ --> src/oms/preflight.rs:8:42
+  |
+8 | use crate::eal::{RiskError, TradeSignal, VenueId};
+  |                                          ^^^^^^^
+
+warning: unused variable: `bids`
+   --> src/eal/binance.rs:169:13
+    |
+169 |         let bids: Vec<BookLevel> = self
+    |             ^^^^ help: if this is intentional, prefix it with an underscore: `_bids`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `client`
+   --> src/eal/hyperliquid_exec.rs:220:13
+    |
+220 |         let client = self.client.clone();
+    |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_client`
+
+warning: unused variable: `is_buyer_maker`
+   --> src/eal/okx.rs:155:29
+    |
+155 | ...         let is_buyer_maker = trade.side == "s...
+    |                 ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_is_buyer_maker`
+
+warning: unused variable: `symbol`
+  --> src/eal/mod.rs:67:43
+   |
+67 | ..._by_cloid(&self, symbol: &Symbol, cloid: &str) ...
+   |                     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_symbol`
+
+warning: unused variable: `cloid`
+  --> src/eal/mod.rs:67:60
+   |
+67 | ...symbol: &Symbol, cloid: &str) -> Result<(), Exe...
+   |                     ^^^^^ help: if this is intentional, prefix it with an underscore: `_cloid`
+
+warning: unused variable: `signal`
+   --> src/oms/preflight.rs:123:9
+    |
+123 |         signal: &TradeSignal,
+    |         ^^^^^^ help: if this is intentional, prefix it with an underscore: `_signal`
+
+warning: unused variable: `current_ns`
+   --> src/signal/impulse.rs:416:37
+    |
+416 | ...expired(&self, current_ns: u64) -> bool {
+    |                   ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_current_ns`
+
+warning: fields `symbol`, `first_update_id`, and `event_time` are never read
+  --> src/eal/binance.rs:38:5
+   |
+36 | struct BinanceDepthUpdate {
+   |        ------------------ fields in this struct
+37 |     #[serde(rename = "s")]
+38 |     symbol: String,
+   |     ^^^^^^
+39 |     #[serde(rename = "U")]
+40 |     first_update_id: u64,
+   |     ^^^^^^^^^^^^^^^
+...
+50 |     event_time: u64,
+   |     ^^^^^^^^^^
+   |
+   = note: `BinanceDepthUpdate` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `inst_id` is never read
+  --> src/eal/okx.rs:33:5
+   |
+31 | struct OkxTick {
+   |        ------- field in this struct
+32 |     #[serde(rename = "instId")]
+33 |     inst_id: String,
+   |     ^^^^^^^
+   |
+   = note: `OkxTick` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `inst_id` and `seqId` are never read
+  --> src/eal/okx.rs:43:5
+   |
+41 | struct OkxBbo {
+   |        ------ fields in this struct
+42 |     #[serde(rename = "instId")]
+43 |     inst_id: String,
+   |     ^^^^^^^
+...
+47 |     seqId: Option<i64>,
+   |     ^^^^^
+   |
+   = note: `OkxBbo` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `arg` is never read
+  --> src/eal/okx.rs:54:9
+   |
+53 |     Trades {
+   |     ------ field in this variant
+54 |         arg: serde_json::Value,
+   |         ^^^
+   |
+   = note: `OkxMessage` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `arg` is never read
+  --> src/eal/okx.rs:58:9
+   |
+57 |     Bbo {
+   |     --- field in this variant
+58 |         arg: serde_json::Value,
+   |         ^^^
+   |
+   = note: `OkxMessage` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: fields `event`, `arg`, and `connId` are never read
+  --> src/eal/okx.rs:62:9
+   |
+61 |     Event {
+   |     ----- fields in this variant
+62 |         event: String,
+   |         ^^^^^
+63 |         arg: Option<serde_json::Value>,
+   |         ^^^
+64 |         connId: Option<String>,
+   |         ^^^^^^
+   |
+   = note: `OkxMessage` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+
+warning: field `0` is never read
+  --> src/eal/okx.rs:66:11
+   |
+66 |     Other(serde_json::Value),
+   |     ----- ^^^^^^^^^^^^^^^^^
+   |     |
+   |     field in this variant
+   |
+   = note: `OkxMessage` has a derived impl for the trait `Debug`, but this is intentionally ignored during dead code analysis
+help: consider changing the field to be of unit type to suppress this warning while preserving the field numbering, or remove the field
+   |
+66 -     Other(serde_json::Value),
+66 +     Other(()),
+   |
+
+warning: field `threshold_margin` is never read
+  --> src/signal/hysteresis.rs:47:5
+   |
+35 | pub struct Hysteresis {
+   |            ---------- field in this struct
+...
+47 |     threshold_margin: f64,
+   |     ^^^^^^^^^^^^^^^^
+   |
+   = note: `Hysteresis` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: method `current_delta` is never used
+   --> src/signal/impulse.rs:153:8
+    |
+ 45 | impl MidpriceTracker {
+    | -------------------- method in this implementation
+...
+153 |     fn current_delta(&self) -> Option<f64> {
+    |        ^^^^^^^^^^^^^
+
+warning: field `signal_timeout_ns` is never read
+   --> src/signal/impulse.rs:182:5
+    |
+176 | pub struct ImpulseDetector {
+    |            --------------- field in this struct
+...
+182 |     signal_timeout_ns: u64,
+    |     ^^^^^^^^^^^^^^^^^
+
+warning: structure field `seqId` should have a snake case name
+  --> src/eal/okx.rs:47:5
+   |
+47 |     seqId: Option<i64>,
+   |     ^^^^^ help: convert the identifier to snake case: `seq_id`
+   |
+   = note: `#[warn(non_snake_case)]` (part of `#[warn(nonstandard_style)]`) on by default
+
+warning: structure field `connId` should have a snake case name
+  --> src/eal/okx.rs:64:9
+   |
+64 |         connId: Option<String>,
+   |         ^^^^^^ help: convert the identifier to snake case: `conn_id`
+
+warning: structure field `instId` should have a snake case name
+   --> src/eal/okx.rs:301:5
+    |
+301 |     instId: String,
+    |     ^^^^^^ help: convert the identifier to snake case: `inst_id`
+
+warning: structure field `tdMode` should have a snake case name
+   --> src/eal/okx.rs:302:5
+    |
+302 |     tdMode: String,
+    |     ^^^^^^ help: convert the identifier to snake case: `td_mode`
+
+warning: structure field `ordType` should have a snake case name
+   --> src/eal/okx.rs:304:5
+    |
+304 |     ordType: String,
+    |     ^^^^^^^ help: convert the identifier to snake case: `ord_type`
+
+warning: structure field `clOrdId` should have a snake case name
+   --> src/eal/okx.rs:306:5
+    |
+306 |     clOrdId: String,
+    |     ^^^^^^^ help: convert the identifier to snake case: `cl_ord_id`
+
+warning: `tokioparasite` (lib) generated 30 warnings (run `cargo fix --lib -p tokioparasite` to apply 14 suggestions)
+    Checking tokioparasite v0.1.0 (/Users/mehdi/Leadlag/tokioparasite)
+error[E0425]: cannot find value `pipeline` in this scope
+   --> src/runners/okx.rs:239:39
+    |
+239 | ...nal) = pipeline.process_pair(&tick.symbol, pai...
+    |           ^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find value `pipeline` in this scope
+   --> src/runners/okx.rs:271:35
+    |
+271 | ...nal) = pipeline.process_tick(&tick) {
+    |           ^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find value `pipeline` in this scope
+   --> src/runners/okx.rs:413:39
+    |
+413 | ...nal) = pipeline.process_pair(&tick.symbol, pai...
+    |           ^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find value `pipeline` in this scope
+   --> src/runners/okx.rs:442:35
+    |
+442 | ...nal) = pipeline.process_tick(&tick) {
+    |           ^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find value `pipeline` in this scope
+   --> src/runners/okx.rs:521:39
+    |
+521 | ...nal) = pipeline.process_book_for_impulse(&book) {
+    |           ^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find value `pipeline` in this scope
+   --> src/runners/okx.rs:557:39
+    |
+557 | ...nal) = pipeline.process_book(&book) {
+    |           ^^^^^^^^ not found in this scope
+
+error[E0425]: cannot find value `pipeline` in this scope
+   --> src/runners/okx.rs:681:17
+    |
+681 | ...   pipeline.update_settings(new_settings.strat...
+    |       ^^^^^^^^ not found in this scope
+
+error[E0603]: module `schema` is private
+  --> src/main.rs:29:17
+   |
+29 |     use config::schema::{TradingMode, TargetExchan...
+   |                 ^^^^^^ private module
+   |
+help: consider importing this enum through its public re-export instead:
+      crate::config::TradingMode
+  --> src/main.rs:29:26
+   |
+29 |     use config::schema::{TradingMode, TargetExchan...
+   |                          ^^^^^^^^^^^
+note: the module `schema` is defined here
+  --> src/config/mod.rs:5:1
+   |
+ 5 | mod schema;
+   | ^^^^^^^^^^^
+
+error[E0603]: module `schema` is private
+  --> src/main.rs:29:17
+   |
+29 |     use config::schema::{TradingMode, TargetExchan...
+   |                 ^^^^^^ private module
+   |
+help: consider importing this enum through its public re-export instead:
+      crate::config::TargetExchange
+  --> src/main.rs:29:39
+   |
+29 | ...::{TradingMode, TargetExchange};
+   |                    ^^^^^^^^^^^^^^
+note: the module `schema` is defined here
+  --> src/config/mod.rs:5:1
+   |
+ 5 | mod schema;
+   | ^^^^^^^^^^^
+
+warning: unused import: `warn`
+  --> src/sim/mod.rs:23:21
+   |
+23 | use tracing::{info, warn};
+   |                     ^^^^
+
+warning: unused import: `crate::config`
+ --> src/runners/hyperliquid.rs:8:5
+  |
+8 | use crate::config;
+  |     ^^^^^^^^^^^^^
+
+warning: unused import: `crate::oms`
+  --> src/runners/hyperliquid.rs:10:5
+   |
+10 | use crate::oms;
+   |     ^^^^^^^^^^
+
+warning: unused import: `crate::signal`
+  --> src/runners/hyperliquid.rs:12:5
+   |
+12 | use crate::signal;
+   |     ^^^^^^^^^^^^^
+
+warning: unused import: `crate::sim`
+  --> src/runners/hyperliquid.rs:13:5
+   |
+13 | use crate::sim;
+   |     ^^^^^^^^^^
+
+warning: unused import: `crate::config`
+ --> src/runners/okx.rs:8:5
+  |
+8 | use crate::config;
+  |     ^^^^^^^^^^^^^
+
+warning: unused import: `crate::oms`
+  --> src/runners/okx.rs:10:5
+   |
+10 | use crate::oms;
+   |     ^^^^^^^^^^
+
+warning: unused import: `crate::signal`
+  --> src/runners/okx.rs:12:5
+   |
+12 | use crate::signal;
+   |     ^^^^^^^^^^^^^
+
+warning: unused import: `crate::sim`
+  --> src/runners/okx.rs:13:5
+   |
+13 | use crate::sim;
+   |     ^^^^^^^^^^
+
+warning: unused import: `SignalPipeline`
+  --> src/runners/okx.rs:19:21
+   |
+19 | use crate::signal::{SignalPipeline, TimeGrid};
+   |                     ^^^^^^^^^^^^^^
+
+warning: unused import: `crate::config`
+ --> src/runners/mexc.rs:8:5
+  |
+8 | use crate::config;
+  |     ^^^^^^^^^^^^^
+
+warning: unused import: `crate::oms`
+  --> src/runners/mexc.rs:10:5
+   |
+10 | use crate::oms;
+   |     ^^^^^^^^^^
+
+warning: unused import: `crate::signal`
+  --> src/runners/mexc.rs:12:5
+   |
+12 | use crate::signal;
+   |     ^^^^^^^^^^^^^
+
+warning: unused import: `crate::sim`
+  --> src/runners/mexc.rs:13:5
+   |
+13 | use crate::sim;
+   |     ^^^^^^^^^^
+
+warning: unused import: `crate::config`
+ --> src/runners/paper.rs:8:5
+  |
+8 | use crate::config;
+  |     ^^^^^^^^^^^^^
+
+warning: unused import: `crate::oms`
+  --> src/runners/paper.rs:10:5
+   |
+10 | use crate::oms;
+   |     ^^^^^^^^^^
+
+warning: unused import: `crate::signal`
+  --> src/runners/paper.rs:12:5
+   |
+12 | use crate::signal;
+   |     ^^^^^^^^^^^^^
+
+warning: unused import: `crate::sim`
+  --> src/runners/paper.rs:13:5
+   |
+13 | use crate::sim;
+   |     ^^^^^^^^^^
+
+warning: variable does not need to be mutable
+   --> src/runners/hyperliquid.rs:111:9
+    |
+111 |     let mut simulator = PaperSimulator::new(setti...
+    |         ----^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> src/runners/hyperliquid.rs:195:9
+    |
+195 |     let mut medium_conviction_count = 0u64;
+    |         ----^^^^^^^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src/runners/mexc.rs:117:9
+    |
+117 |     let mut simulator = PaperSimulator::new(setti...
+    |         ----^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src/runners/mexc.rs:201:9
+    |
+201 |     let mut medium_conviction_count = 0u64;
+    |         ----^^^^^^^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src/runners/paper.rs:120:9
+    |
+120 |     let mut simulator = PaperSimulator::new(setti...
+    |         ----^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> src/runners/paper.rs:169:9
+    |
+169 |     let mut medium_conviction_count = 0u64;
+    |         ----^^^^^^^^^^^^^^^^^^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: variable `levels_used` is assigned to, but never used
+  --> src/sim/matcher.rs:59:13
+   |
+59 |         let mut levels_used = 0;
+   |             ^^^^^^^^^^^^^^^
+   |
+   = note: consider using `_levels_used` instead
+
+warning: value assigned to `levels_used` is never read
+  --> src/sim/matcher.rs:86:13
+   |
+86 |             levels_used += 1;
+   |             ^^^^^^^^^^^^^^^^
+   |
+   = help: maybe it is overwritten before being read?
+   = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable `last_price_a` is assigned to, but never used
+   --> src/runners/hyperliquid.rs:170:9
+    |
+170 |     let mut last_price_a: Option<f64> = None;
+    |         ^^^^^^^^^^^^^^^^
+    |
+    = note: consider using `_last_price_a` instead
+
+warning: variable `last_price_b` is assigned to, but never used
+   --> src/runners/hyperliquid.rs:171:9
+    |
+171 |     let mut last_price_b: Option<f64> = None;
+    |         ^^^^^^^^^^^^^^^^
+    |
+    = note: consider using `_last_price_b` instead
+
+warning: value assigned to `last_price_a` is never read
+   --> src/runners/hyperliquid.rs:213:13
+    |
+213 |             last_price_a = Some(tick.price);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+
+warning: value assigned to `last_price_b` is never read
+   --> src/runners/hyperliquid.rs:390:13
+    |
+390 |             last_price_b = Some(tick.price);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+
+warning: unused variable: `executor`
+  --> src/runners/mexc.rs:51:9
+   |
+51 |     let executor = Arc::new(MexcLiveExecutor::new(
+   |         ^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_executor`
+
+warning: variable `last_price_a` is assigned to, but never used
+   --> src/runners/mexc.rs:176:9
+    |
+176 |     let mut last_price_a: Option<f64> = None;
+    |         ^^^^^^^^^^^^^^^^
+    |
+    = note: consider using `_last_price_a` instead
+
+warning: variable `last_price_b` is assigned to, but never used
+   --> src/runners/mexc.rs:177:9
+    |
+177 |     let mut last_price_b: Option<f64> = None;
+    |         ^^^^^^^^^^^^^^^^
+    |
+    = note: consider using `_last_price_b` instead
+
+warning: value assigned to `last_price_a` is never read
+   --> src/runners/mexc.rs:219:13
+    |
+219 |             last_price_a = Some(tick.price);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+
+warning: value assigned to `last_price_b` is never read
+   --> src/runners/mexc.rs:396:13
+    |
+396 |             last_price_b = Some(tick.price);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+
+warning: variable `last_price_a` is assigned to, but never used
+   --> src/runners/paper.rs:144:9
+    |
+144 |     let mut last_price_a: Option<f64> = None;
+    |         ^^^^^^^^^^^^^^^^
+    |
+    = note: consider using `_last_price_a` instead
+
+warning: variable `last_price_b` is assigned to, but never used
+   --> src/runners/paper.rs:145:9
+    |
+145 |     let mut last_price_b: Option<f64> = None;
+    |         ^^^^^^^^^^^^^^^^
+    |
+    = note: consider using `_last_price_b` instead
+
+warning: value assigned to `last_price_a` is never read
+   --> src/runners/paper.rs:187:13
+    |
+187 |             last_price_a = Some(tick.price);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+
+warning: value assigned to `last_price_b` is never read
+   --> src/runners/paper.rs:364:13
+    |
+364 |             last_price_b = Some(tick.price);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+
+Some errors have detailed explanations: E0425, E0603.
+For more information about an error, try `rustc --explain E0425`.
+warning: `tokioparasite` (bin "tokioparasite") generated 53 warnings (14 duplicates)
+error: could not compile `tokioparasite` (bin "tokioparasite") due to 9 previous errors; 53 warnings emitted

@@ -52,9 +52,30 @@ impl Settings {
 // App Settings
 // ============================================================================
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TradingMode {
+    Paper,
+    Live,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TargetExchange {
+    Hyperliquid,
+    Okx,
+    Mexc,
+}
+
 #[derive(Debug, Clone, Deserialize, Validate)]
 #[serde(deny_unknown_fields)]
 pub struct AppSettings {
+    /// Trading mode (paper or live)
+    pub trading_mode: TradingMode,
+
+    /// Target execution exchange
+    pub target_exchange: TargetExchange,
+
     /// Log level: trace, debug, info, warn, error
     #[validate(length(min = 1))]
     pub log_level: String,
@@ -283,9 +304,6 @@ pub struct RiskSettings {
 #[derive(Debug, Clone, Deserialize, Validate)]
 #[serde(deny_unknown_fields)]
 pub struct SimulationSettings {
-    /// Enable paper trading mode
-    pub enabled: bool,
-
     /// Use real market data feeds (Binance, Hyperliquid)
     /// No API keys required for market data
     pub use_real_data: bool,

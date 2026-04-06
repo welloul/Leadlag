@@ -1,0 +1,126 @@
+    Checking tokioparasite v0.1.0 (/Users/mehdi/Leadlag/tokioparasite)
+warning: unused import: `connect_async`
+  --> src/eal/binance.rs:12:25
+   |
+12 | use tokio_tungstenite::{connect_async, tungstenite...
+   |                         ^^^^^^^^^^^^^
+   |
+   = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused import: `connect_async`
+  --> src/eal/hyperliquid.rs:12:25
+   |
+12 | use tokio_tungstenite::{connect_async, tungstenite...
+   |                         ^^^^^^^^^^^^^
+
+warning: unused imports: `Deserialize` and `Serialize`
+ --> src/eal/hyperliquid_exec.rs:8:13
+  |
+8 | use serde::{Deserialize, Serialize};
+  |             ^^^^^^^^^^^  ^^^^^^^^^
+
+warning: unused import: `Request`
+  --> src/eal/hyperliquid_exec.rs:20:103
+   |
+20 | ...Limit, Tif, Action, Request},
+   |                        ^^^^^^^
+
+warning: unused import: `ethers_core::types::Address`
+  --> src/eal/hyperliquid_exec.rs:22:5
+   |
+22 | use ethers_core::types::Address;
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `connect_async`
+ --> src/eal/okx.rs:7:25
+  |
+7 | use tokio_tungstenite::{connect_async, tungstenite:...
+  |                         ^^^^^^^^^^^^^
+
+warning: unused import: `connect_async`
+ --> src/eal/mexc.rs:7:25
+  |
+7 | use tokio_tungstenite::{connect_async, tungstenite:...
+  |                         ^^^^^^^^^^^^^
+
+warning: unused imports: `Engine as _` and `engine::general_purpose`
+  --> src/eal/mexc.rs:10:14
+   |
+10 | use base64::{Engine as _, engine::general_purpose};
+   |              ^^^^^^^^^^^  ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `VenueId`
+ --> src/oms/preflight.rs:8:42
+  |
+8 | use crate::eal::{RiskError, TradeSignal, VenueId};
+  |                                          ^^^^^^^
+
+error[E0599]: no variant or associated item named `Exit` found for enum `eal::types::OrderPurpose` in the current scope
+   --> src/eal/mexc.rs:331:82
+    |
+331 | ...s::OrderPurpose::Exit) => 2,
+    |                     ^^^^ variant or associated item not found in `eal::types::OrderPurpose`
+    |
+   ::: src/eal/types.rs:217:1
+    |
+217 | pub enum OrderPurpose {
+    | --------------------- variant or associated item `Exit` not found for this enum
+
+error[E0599]: no variant or associated item named `Exit` found for enum `eal::types::OrderPurpose` in the current scope
+   --> src/eal/mexc.rs:333:83
+    |
+333 | ...s::OrderPurpose::Exit) => 4,
+    |                     ^^^^ variant or associated item not found in `eal::types::OrderPurpose`
+    |
+   ::: src/eal/types.rs:217:1
+    |
+217 | pub enum OrderPurpose {
+    | --------------------- variant or associated item `Exit` not found for this enum
+
+warning: unused variable: `bids`
+   --> src/eal/binance.rs:169:13
+    |
+169 |         let bids: Vec<BookLevel> = self
+    |             ^^^^ help: if this is intentional, prefix it with an underscore: `_bids`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused variable: `client`
+   --> src/eal/hyperliquid_exec.rs:220:13
+    |
+220 |         let client = self.client.clone();
+    |             ^^^^^^ help: if this is intentional, prefix it with an underscore: `_client`
+
+warning: unused variable: `is_buyer_maker`
+   --> src/eal/okx.rs:155:29
+    |
+155 | ...         let is_buyer_maker = trade.side == "s...
+    |                 ^^^^^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_is_buyer_maker`
+
+warning: unused variable: `symbol`
+  --> src/eal/mod.rs:67:43
+   |
+67 | ..._by_cloid(&self, symbol: &Symbol, cloid: &str) ...
+   |                     ^^^^^^ help: if this is intentional, prefix it with an underscore: `_symbol`
+
+warning: unused variable: `cloid`
+  --> src/eal/mod.rs:67:60
+   |
+67 | ...symbol: &Symbol, cloid: &str) -> Result<(), Exe...
+   |                     ^^^^^ help: if this is intentional, prefix it with an underscore: `_cloid`
+
+warning: unused variable: `signal`
+   --> src/oms/preflight.rs:123:9
+    |
+123 |         signal: &TradeSignal,
+    |         ^^^^^^ help: if this is intentional, prefix it with an underscore: `_signal`
+
+warning: unused variable: `current_ns`
+   --> src/signal/impulse.rs:416:37
+    |
+416 | ...expired(&self, current_ns: u64) -> bool {
+    |                   ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_current_ns`
+
+For more information about this error, try `rustc --explain E0599`.
+warning: `tokioparasite` (lib) generated 16 warnings
+error: could not compile `tokioparasite` (lib) due to 2 previous errors; 16 warnings emitted

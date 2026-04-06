@@ -3,6 +3,8 @@
 # ==========================================
 
 [app]
+trading_mode = "paper"
+target_exchange = "okx"
 log_level = "debug"
 perf_mode = true
 cpu_pinning = true
@@ -93,7 +95,6 @@ self_trade_prevention = true
 # --- Simulation / Paper Trading ---
 
 [simulation]
-enabled = true
 use_real_data = true           # Set to true for live market data feeds
 latency_simulation_ms = 5
 fee_tier_bps = 2.5

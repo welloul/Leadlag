@@ -69,6 +69,9 @@ dotenv = "0.15"
 hyperliquid = "0.2.4"
 tungstenite = "0.29.0"
 url = "2.5.8"
+hmac = "0.13.0"
+sha2 = "0.11.0"
+base64 = "0.22.1"
 
 [dev-dependencies]
 # Property-based testing
