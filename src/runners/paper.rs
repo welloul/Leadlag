@@ -12,8 +12,8 @@ use crate::persist;
 use crate::signal;
 use crate::sim;
 
-use crate::config::Settings;
-use crate::eal::{BinanceExchange, HyperliquidExchange, MarketData, MockExchange, VenueId, OrderExecution};
+use crate::config::{Settings, TargetExchange};
+use crate::eal::{BinanceExchange, HyperliquidExchange, MexcExchange, OkxExchange, MarketData, MockExchange, VenueId, OrderExecution};
 use crate::oms::OrderManagementSystem;
 use crate::persist::{StateStore, TelemetryWriter};
 use crate::signal::{SignalPipeline, TimeGrid};
@@ -58,11 +58,21 @@ pub async fn run(settings: Settings) -> Result<(), Box<dyn std::error::Error>> {
     // Initialize exchanges based on configuration
     let (exchange_a, exchange_b): (Box<dyn MarketData>, Box<dyn MarketData>) =
         if settings.simulation.use_real_data {
-            info!("Using real market data feeds (Binance, Hyperliquid)");
-            (
-                Box::new(BinanceExchange::new()),
-                Box::new(HyperliquidExchange::new()),
-            )
+            let laggard: Box<dyn MarketData> = match settings.app.target_exchange {
+                TargetExchange::Hyperliquid => {
+                    info!("Using real market data feeds (Binance, Hyperliquid)");
+                    Box::new(HyperliquidExchange::new())
+                }
+                TargetExchange::Okx => {
+                    info!("Using real market data feeds (Binance, OKX)");
+                    Box::new(OkxExchange::new())
+                }
+                TargetExchange::Mexc => {
+                    info!("Using real market data feeds (Binance, MEXC)");
+                    Box::new(MexcExchange::new())
+                }
+            };
+            (Box::new(BinanceExchange::new()), laggard)
         } else {
             info!("Using mock exchanges for paper trading");
             (

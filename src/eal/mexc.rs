@@ -141,10 +141,16 @@ impl MexcExchange {
 
         let (mut write, mut read) = ws_stream.split();
 
+        let mexc_symbol = if symbol.0.contains('_') {
+            symbol.0.clone()
+        } else {
+            format!("{}_USDT", symbol.0.to_uppercase())
+        };
+
         // Sub trades
         let sub_trades = serde_json::to_string(&MexcSubscribe {
             method: "sub.deal".to_string(),
-            param: MexcSubscribeParam { symbol: symbol.0.clone() },
+            param: MexcSubscribeParam { symbol: mexc_symbol.clone() },
         }).map_err(|e| ExchangeError::ParseError(e.to_string()))?;
         write.send(Message::Text(sub_trades)).await.map_err(|e| ExchangeError::WebSocketError(e.to_string()))?;
 
@@ -152,7 +158,7 @@ impl MexcExchange {
         if book_sender.is_some() {
             let sub_depth = serde_json::to_string(&MexcSubscribe {
                 method: "sub.depth".to_string(),
-                param: MexcSubscribeParam { symbol: symbol.0.clone() },
+                param: MexcSubscribeParam { symbol: mexc_symbol },
             }).map_err(|e| ExchangeError::ParseError(e.to_string()))?;
             write.send(Message::Text(sub_depth)).await.map_err(|e| ExchangeError::WebSocketError(e.to_string()))?;
         }

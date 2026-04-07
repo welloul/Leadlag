@@ -42,11 +42,16 @@ impl Symbol {
     /// Strips common suffixes like "USDT", "USDC" so Binance's "ZECUSDT"
     /// matches Hyperliquid's "ZEC".
     pub fn normalize(&self) -> Symbol {
-        let s = &self.0;
+        let s = &self.0.to_uppercase();
         if let Some(stripped) = s.strip_suffix("USDT") {
-            return Symbol::new(stripped);
+            let s2 = stripped.strip_suffix('_').unwrap_or(stripped);
+            return Symbol::new(s2);
         }
         if let Some(stripped) = s.strip_suffix("USDC") {
+            let s2 = stripped.strip_suffix('_').unwrap_or(stripped);
+            return Symbol::new(s2);
+        }
+        if let Some(stripped) = s.strip_suffix("-USDT-SWAP") {
             return Symbol::new(stripped);
         }
         self.clone()
